@@ -63,18 +63,36 @@ jobs:
           python3 <<'PY'
           import json, os, datetime, pathlib
           m = json.loads(os.environ["METRICS_JSON"])
+          by_path = m.get("by_path", {})
           date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+          # total_requests counts every HTTP request, including Fly's
+          # /health probes (one every 30 s) and favicon fetches, and a
+          # client looping on /favicon.svg added about 6M of those between
+          # 2026-07-18 and 2026-08-14, so its trend no longer shows traffic.
+          # client_requests is the same count without those paths. by_path
+          # is cumulative and persisted, so the figure is right over the
+          # whole history, not just from the day this column was added.
+          noise = ("/health", "/favicon.ico", "/favicon.png", "/favicon.svg")
+          total = m.get("total_requests")
+          client = "" if total is None else str(
+              total - sum(by_path.get(p, 0) for p in noise)
+          )
           row = ",".join([
               date,
               str(m.get("tool_calls_total", "")),
-              str(m.get("by_path", {}).get("/mcp", "")),
+              str(by_path.get("/mcp", "")),
               str(m.get("total_requests", "")),
               str(m.get("sessions_total", "")),
+              client,
           ])
-          # sessions_total appended as a trailing column; rows logged before
-          # the counter existed simply omit it (4 fields), which DictReader
-          # tolerates. Daily connections = the day-over-day delta.
-          header = "date,tool_calls_total,mcp_requests,total_requests,sessions_total"
+          # sessions_total and client_requests are trailing columns; rows
+          # logged before a counter existed simply omit it (4 or 5 fields),
+          # which DictReader tolerates. Daily connections = the day-over-day
+          # delta of sessions_total, daily traffic that of client_requests.
+          header = (
+              "date,tool_calls_total,mcp_requests,total_requests,"
+              "sessions_total,client_requests"
+          )
           f = pathlib.Path("metrics-history.csv")
           lines = f.read_text().splitlines() if f.exists() else [header]
           # Idempotent: drop any existing row for today before appending.
