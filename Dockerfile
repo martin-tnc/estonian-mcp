@@ -30,6 +30,11 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project --no-dev
 
+# EstNLTK bundles MaltParser, a Java parser, with log4j 1.2.14 (end of
+# life, known CVEs). The server never runs MaltParser and the image has
+# no Java runtime, so delete the jar before it reaches the runtime stage.
+RUN find /opt/venv -name 'log4j*.jar' -print -delete
+
 # Pre-download EstNLTK WordNet (~26 MB) into the venv's resources dir so
 # the `synonyms` tool doesn't trigger an interactive download prompt on
 # first call at runtime. The "y" pipes past the [Y/n] prompt baked into
