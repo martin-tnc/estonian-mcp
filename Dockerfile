@@ -110,6 +110,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HOST=0.0.0.0 \
     ESTNLTK_MCP_TRANSPORT=http
 
+# The server runs from /opt/venv, which has no pip. The base image's own
+# pip is never used, and it vendors urllib3, msgpack and setuptools
+# releases with known CVEs (pip 26.2.2 still does), so remove it.
+RUN /usr/local/bin/python3 -m pip uninstall --yes pip
+
 # Drop privileges. EstNLTK has no need for root.
 RUN groupadd --system --gid 1000 app \
  && useradd  --system --uid 1000 --gid app --home /home/app --create-home app
