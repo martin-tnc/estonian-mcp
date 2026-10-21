@@ -230,7 +230,10 @@ it does not give the server user identity. `tests/test_deploy.py` and
 - CI runs the smoke test on every push + PR before any release.
 - Docker image is built from official `python:3.13-slim`; runs as a
   non-root `app` user with no installed shell utilities beyond what
-  the base image provides.
+  the base image provides. The build removes two things the server
+  never uses and image scans flag: the base image's pip, and the
+  log4j 1.x jar EstNLTK bundles for MaltParser (the image has no Java
+  runtime).
 
 ## Auditing
 

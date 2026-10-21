@@ -7,6 +7,32 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- Image scan fixes: a build of this tree now passes trivy's gate on
+  fixable high and critical findings. No API or tool behaviour change.
+  - **certifi** 2026.4.22 -> 2026.10.19. GHSA-6q48-6c7w-9gw2 (critical):
+    the bundle still trusted the emSign ECC Root CA - G3 root, whose
+    intermediate CA keys were compromised.
+  - **Pillow** 12.3.0 -> 13.0.0 on Python 3.11 to 3.13. CVE-2026-112403
+    (critical, the JPEG decoder overflows a buffer sized for draft scale)
+    and six high findings in the TIFF, GIF, PDF and ImageMorph code
+    (CVE-2026-112397, CVE-2026-112400, CVE-2026-112404, CVE-2026-112895,
+    CVE-2026-112896, CVE-2026-112897). Pillow arrives under `matplotlib`
+    -> `estnltk`; no tool decodes an image. 13.0.0 needs Python 3.11 and
+    no 12.x release carries the fixes, so Python 3.10 installs keep
+    12.3.0.
+  - **log4j 1.2.14**, the jar EstNLTK bundles for MaltParser, is deleted
+    from the image: CVE-2023-26464 (high), and log4j 1.x is end of life.
+    The server never runs MaltParser and the image has no Java runtime.
+    EstNLTK 1.7.5, the latest release, still ships the jar.
+  - **pip** is removed from the runtime image. The server runs from
+    `/opt/venv`, which has no pip. The base image's pip 26.2.1 vendors
+    certifi 2026.6.17, urllib3 2.7.0, msgpack 1.1.2 and setuptools
+    70.3.0 (GHSA-6q48-6c7w-9gw2, critical; CVE-2026-97687,
+    CVE-2026-97689, GHSA-6v7p-g79w-8964 and CVE-2025-47273, high), and
+    pip 26.2.2 still vendors the last three.
+
 ## [0.7.1] - 2026-10-04
 
 ### Fixed
