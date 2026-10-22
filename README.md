@@ -582,6 +582,11 @@ Terms of service for the hosted endpoint: [TERMS.md](TERMS.md).
   [scripts/README.md](scripts/README.md)) and set
   `ESTNLTK_MCP_LEGAL_INDEX` to its path; the server reads it on the
   first call.
+- **Results are lean, because every caller pays for them in tokens.**
+  Each answer is one compact JSON block holding only the fields that
+  apply. No tool echoes your input or repeats a fixed note, and the
+  rules every tool shares are said once in the server instructions.
+  0.8.0 cut the tool list by 42% and a typical result by about half.
 - Heavy neural taggers (`estnltk_neural`, BERT-based NER) are
   intentionally not pulled in; this server stays lean and fast.
 - First call after server start incurs a one-time tag-layer load

@@ -143,7 +143,7 @@ INDEX_HTML = b"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <title>estonian-mcp</title>
-<meta name="description" content="Estonian NLP MCP server \xe2\x80\x94 spell-check, morphology, synonyms, NER for AI agents writing Estonian.">
+<meta name="description" content="Estonian NLP MCP server: spell-check, morphology, synonyms, NER for AI agents writing Estonian.">
 <link rel="icon" type="image/png" sizes="64x64" href="/favicon.png">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="shortcut icon" href="/favicon.ico">
@@ -156,7 +156,7 @@ INDEX_HTML = b"""<!DOCTYPE html>
 </head>
 <body>
 <h1><img class="flag" src="/favicon.svg" alt="">estonian-mcp</h1>
-<p>Estonian NLP MCP server \xe2\x80\x94 spell-check, morphology, synonyms, NER, and more, exposed as MCP tools so AI agents stop hallucinating Estonian.</p>
+<p>Estonian NLP MCP server: spell-check, morphology, synonyms, NER, and more, exposed as MCP tools so AI agents stop hallucinating Estonian.</p>
 <p>MCP endpoint: <code>https://estonian-mcp.fly.dev/mcp</code></p>
 <p>Source: <a href="https://github.com/silly-geese/estonian-mcp">silly-geese/estonian-mcp</a> &nbsp;\xc2\xb7&nbsp; Listing: <a href="https://smithery.ai/servers/silly-geese/estonian-mcp">Smithery</a></p>
 </body>
