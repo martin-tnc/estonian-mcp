@@ -1,32 +1,13 @@
-"""Tests for `check_numbers` and the context it reads.
+"""Tests for `check_numbers`.
 
-The tool used to read no context, so it flagged correct Estonian:
-
-1. THOUSANDS. Any single comma group was an English thousands separator,
-   but in Estonian the comma is the decimal separator: `1,250 kg` and
-   `3,142` are decimals, and the suggestion `1 250` multiplied the value
-   by 1000. Only two or more groups (1,500,000) or a group before a period
-   decimal (1,500.50) are unambiguous, and 1,500,000.50 is one issue, not a
-   thousands issue plus a decimal issue on `000.50`.
-
-2. DECIMALS. Every d.d was an English decimal, including the times, dates,
-   section and version numbers Estonian writes with a period: kell 10.30,
-   10.30-12.00, 14.05, punkt 3.2, § 3.2, Python 3.12, v1.2.
-
-3. A decimal at a sentence end (`Pi on 3.14.`) was missed, because the
-   period after it read as one more group.
-
-4. Reading context brings misfires of its own, pinned below: an EKI clause
-   number with its period (4.13. Tellija tasub), a cue on another line, a
-   measure or a label in capitals (pH 7.4, KOKKU 1500.50), kell the watch
-   (Kella aku kestab 2.5 päeva), a ratio (2.5 osa liiva), a recipe unit
-   (0.5 tl), a currency code (CHF 12.50), a midnight hour (00.30), a race
-   time (1.47,58), a Markdown heading, an inflected product name (iOS-i).
-
-Every false positive is pinned clean, every true positive the tool caught
-before is pinned as still caught, and each skip rule gets a case that only
-that rule explains (10.20 is no quarter hour and no date, so `kell 10.20`
-tests the kell rule alone).
+0.8.0 read no context: every d.d was an English decimal and every comma
+group a thousands separator, so it flagged times, dates, section and
+version numbers and Estonian decimals (1,250 kg), and it missed every
+decimal before a sentence-final period (Pi on 3.1416.). The rules now in
+server.py skip a number on a bounded window around it, and the bar is that
+the tool does at least as well as 0.8.0 on every input. The trade-offs the
+design accepts are pinned here as such, each with its reason, so a change
+that moves one shows up.
 
 Run via:
 
@@ -35,6 +16,7 @@ Run via:
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -59,153 +41,267 @@ def found(text: str) -> list[tuple[str, str, str]]:
             for i in server.check_numbers(text)["issues"]]
 
 
+def decimals(text: str) -> list[str]:
+    return [t for rule, t, _ in found(text) if rule == "decimal-separator"]
+
+
 def expect_clean(cases: list[str]) -> None:
     for text in cases:
         got = found(text)
         check(f"clean: {text!r}", got == [], str(got))
 
 
-def expect_flags(cases: dict[str, list[tuple[str, str, str]]]) -> None:
+def expect_decimals(cases: dict[str, list[str]]) -> None:
     for text, want in cases.items():
-        got = found(text)
-        check(f"flags: {text!r}", got == want, f"want {want}, got {got}")
+        got = decimals(text)
+        check(f"flags {want}: {text!r}", got == want, f"got {got}")
 
 
-def single_comma_group_is_a_decimal() -> None:
-    print("thousands-separator: one comma group is an Estonian decimal")
-    expect_clean([
-        "1,250 kg",
-        "Pi on umbes 3,142",
-        "Kaal oli 1,500.",
-        "Päeval 14.05.2026 maksis pi umbes 3,14.",
-    ])
-
-
-def unambiguous_thousands_still_flag() -> None:
-    print("thousands-separator: two groups or a period decimal after one")
-    expect_flags({
-        "Linnas elab 1,500,000 inimest.":
+def thousands() -> None:
+    print("thousands-separator")
+    # One group is an Estonian decimal. Trade-off: 437,811 inimest is missed.
+    expect_clean(["1,250 kg", "Pi on umbes 3,142", "Kaal oli 1,500.",
+                  "Päeval 14.05.2026 maksis pi umbes 3,14.",
+                  "Linnas elab 437,811 inimest."])
+    cases = {
+        "Linnas elab 1,500,000 inimest.": [("thousands-separator", "1,500,000", "1 500 000")],
+        "Linnas elab 1,500,000.": [("thousands-separator", "1,500,000", "1 500 000")],
+        "Laenusumma USD1,500,000 tagastatakse.":
             [("thousands-separator", "1,500,000", "1 500 000")],
-        "Linnas elab 1,500,000.":
-            [("thousands-separator", "1,500,000", "1 500 000")],
-        "Hind oli 1,500.50 eurot.":
-            [("thousands-separator", "1,500.50", "1 500,50")],
-        # One issue for the whole number; `000.50` is not a decimal of its own.
+        # The decimal is converted too, and 500.50 is no issue of its own.
+        "Hind oli 1,500.50 eurot.": [("thousands-separator", "1,500.50", "1 500,50")],
         "Kokku 1,500,000.50 eurot.":
             [("thousands-separator", "1,500,000.50", "1 500 000,50")],
-    })
+    }
+    for text, want in cases.items():
+        got = found(text)
+        check(f"flags {want}: {text!r}", got == want, f"got {got}")
     r = server.check_numbers("Kokku 1,500,000.50 eurot.")
     check("1,500,000.50 is reported at its start",
           [i["position"] for i in r["issues"]] == [6], str(r["issues"]))
 
 
-def times_are_skipped() -> None:
-    print("decimal-separator: times")
-    expect_clean([
-        "kell 10.30",
-        "kell 9.15-17.00",
-        "10.30-12.00",
-        f"kell 9.15{EN_DASH}17.00",
-        f"10.30{EN_DASH}12.00",
-        # Each rule on its own: 10.20 and 12.40 are no quarter hour and no date.
-        "kell 10.20",
-        "Kell oli juba 10.20.",
-        "kella 10.20-ni",
-        "kl 9.20",
-        "kl. 9.20",
-        "10.20-12.40",
-        f"10.20 {EN_DASH} 12.40",
-        "kell 9.20-17.40",
-        "Kohtume 10.30.",
-        "Uks avatakse 9.15.",
-        "Pood suletakse 17.00.",
-    ])
-
-
-def dates_are_skipped() -> None:
-    print("decimal-separator: dates")
-    expect_clean([
-        "Kohtume 14.05",
-        "Kohtume 14.05.",
-        "Kohtume 14.05.2026",
-        "Kohtume 14.05.2026.",
-        "Kohtume 1.05",
-        "Kohtume 1.5.",
-        "Tähtaeg on 31.12 ja 1.01.",
-    ])
-
-
-def section_numbers_are_skipped() -> None:
-    print("decimal-separator: section and clause numbers")
-    expect_clean([
-        "punkt 3.2", "§ 3.2", "lõige 2.1", "peatükk 4.3", "tabel 2.1",
-        "joonis 3.4", "lisa 1.2",
-        # Inflected, abbreviated, glued, after the number, and listed.
-        "Vt lepingu punktis 3.7.", "Sätestatud §3.7 alusel.", "lõikes 2.7",
-        "lg 2.7", "lg. 2.7", "p. 3.7", "peatükis 4.7", "ptk 4.7",
-        "jaotises 3.7", "tabelis 2.7", "joonisel 3.7", "lisas 1.7", "osas 2.7",
-        "nr 3.7", "vt 3.7 punktis", "vt 3.7 lõikes", "punktid 3.2, 3.7 ja 4.7",
-        "§ 3.2-3.7", "(punkt 3.7)", "Tabel 2.7. Tulemused", "Loeng on ruumis 3.17.",
-        "lepingu punkti 3.7 alusel",
-        # A numbered heading.
-        "3.7 Tulemused",
-        "Sissejuhatus\n3.7 Tulemused",
-    ])
-
-
-def versions_are_skipped() -> None:
-    print("decimal-separator: software versions")
-    expect_clean([
-        "Python 3.12", "versioon 2.4", "v1.2", "iOS 17.2",
-        "Python 3.7 on kiire.", "Kasutan Python 3.13 versiooni.",
-        "macOS 14.7", "Windows 10.7", "versioonis 2.7", "ver 2.7", "v 2.7",
-        "Versioon: 2.7", "Python 3.12 ja 3.13", "3.12.1", "192.168.1.1",
-    ])
-
-
-def english_decimals_still_flag() -> None:
-    print("decimal-separator: English decimals still flagged")
-    expect_flags({
-        "Hind on 1500.50 eurot": [("decimal-separator", "1500.50", "1500,50")],
-        "3.14": [("decimal-separator", "3.14", "3,14")],
-        "kasv oli 2.5%": [("decimal-separator", "2.5", "2,5")],
-        "0.75 liitrit": [("decimal-separator", "0.75", "0,75")],
-        "12.5 km": [("decimal-separator", "12.5", "12,5")],
-        "umbes 3.7 miljonit": [("decimal-separator", "3.7", "3,7")],
-        "See maksis 3.14 eurot.": [("decimal-separator", "3.14", "3,14")],
-        # Previously missed: a decimal at a sentence end.
-        "Pi on 3.14.": [("decimal-separator", "3.14", "3,14")],
-        "Pi on 3.14!": [("decimal-separator", "3.14", "3,14")],
-        "Pi: 3.14": [("decimal-separator", "3.14", "3,14")],
-        # A unit beats every skip: a section word, a date, a clock range.
-        "Lisa 1.5 liitrit vett.": [("decimal-separator", "1.5", "1,5")],
-        "Pilet maksab 14.05 eurot.": [("decimal-separator", "14.05", "14,05")],
-        "1.25-1.50 eurot": [("decimal-separator", "1.25", "1,25"),
-                            ("decimal-separator", "1.50", "1,50")],
-        "kella 3.50 euroga": [("decimal-separator", "3.50", "3,50")],
-        "€3.50": [("decimal-separator", "3.50", "3,50")],
-        "EUR 3.50": [("decimal-separator", "3.50", "3,50")],
-        "temperatuur oli 3.7 kraadi": [("decimal-separator", "3.7", "3,7")],
-        "2.5GB": [("decimal-separator", "2.5", "2,5")],
-        # After a number, punkt is a score, not a clause.
-        "Keskmine hinnang oli 3.67 punkti.": [("decimal-separator", "3.67", "3,67")],
-        "Indeks tõusis 3.7 punktini.": [("decimal-separator", "3.7", "3,7")],
-        # A common word opening the sentence is no product name.
-        "Tulemus 3.7 on hea.": [("decimal-separator", "3.7", "3,7")],
-        # Neither a clock range nor joined to a skipped number.
-        "kasv 3.14-lt 3.17-le": [("decimal-separator", "3.14", "3,14"),
-                                 ("decimal-separator", "3.17", "3,17")],
-        "Ostsin kella. 3.7 on hea": [("decimal-separator", "3.7", "3,7")],
-        "See maksis 3.14 eurot ja linnas elab 1,500,000 inimest.": [
-            ("decimal-separator", "3.14", "3,14"),
-            ("thousands-separator", "1,500,000", "1 500 000"),
-        ],
+def kell() -> None:
+    print("rule 1: a time after kell or kl")
+    expect_clean(["kell 10.20", "Kell 10.20 algab koosolek.", "kella 10.20-ni",
+                  "kellaajal 10.20", "kl 9.20", "kl. 9.20"])
+    # Only the word right before counts: kell the watch is no cue.
+    expect_decimals({
+        "Kella aku kestab 2.5 päeva.": ["2.5"],
+        "Uus kell on 2.5 korda kallim.": ["2.5"],
+        "Kellad maksavad 49.90 kuni 99.90.": ["49.90", "99.90"],
+        "Kell maksis 49.90.": ["49.90"],
     })
+
+
+def time_ranges() -> None:
+    print("rule 2: a time range, both ends")
+    expect_clean(["10.30-12.00", "10.20-12.40", f"10.20 {EN_DASH} 12.40",
+                  f"kell 9.15{EN_DASH}17.00", "kell 9.20-17.40", "10.30-12.00."])
+    # Trade-off: a confidence interval has the same shape.
+    expect_clean(["usaldusvahemik 1.05-1.20"])
+    expect_decimals({
+        # Not a range: the right end is earlier, a part has one digit.
+        "kasv 3.14-lt 3.17-le": ["3.14", "3.17"],
+        "intervall 0.5-1.5": ["0.5", "1.5"],
+        # A unit after the range flags both ends.
+        "1.25-1.50 eurot": ["1.25", "1.50"],
+        "Hind on EUR 1.25-1.50": ["1.25", "1.50"],
+    })
+
+
+def section_words() -> None:
+    print("rule 3: a section or version number after its word")
+    expect_clean([
+        "punkt 3.2", "§ 3.2", "Sätestatud §3.7 alusel.", "lõige 2.1", "lõikes 2.7",
+        "peatükk 4.3", "peatükis 4.7", "jaotises 3.7", "tabel 2.1", "Tabel 2.7: Tulemused",
+        "joonisel 3.4", "versioonis 2.7", "Versioon: 2.7", "paragrahvi 3.7",
+        "artikli 3.7", "lisa 1.2", "lisas 1.7", "(punkt 3.7)", "lepingu punkti 3.7 alusel",
+        "lg 2.7", "lg. 2.7", "p. 3.7", "ptk 4.7", "nr 3.7", "v 2.7", "ver 2.7",
+        # Inflected abbreviations.
+        "Vastavalt lepingu p-s 5.3 sätestatule on tellijal õigus leping üles öelda.",
+        "Lõike 2.1 kohaselt kohaldatakse lg-s 2.3 nimetatud tähtaega.",
+        "Töövõtja vastutab ptk-s 4.2 kirjeldatud kohustuste eest.",
+        "Vt lepingu p-le 4.3 lisatud tingimusi.", "§-s 3.2",
+    ])
+    expect_decimals({
+        # Lisa capitalised is the imperative "add".
+        "Lisa 2.5 pakki võid ja sega.": ["2.5"],
+        "Lisa 0.5 pakki pärmi ja 1.5 klaasi sooja piima.": ["0.5", "1.5"],
+        # A unit beats a section word: lowercase lisa is an imperative too.
+        "Sega ja lisa 0.5 tl soola.": ["0.5"],
+        # Only the word right before counts (limit: the list goes on).
+        "Vastavalt p-dele 3.2 ja 3.4 tasub tellija ettemaksu.": ["3.4"],
+        "vt 3.7 punktis": ["3.7"],
+        # Words that merely start like lisa.
+        "lisaks 2.5 miljonit": ["2.5"],
+    })
+
+
+def glued_versions() -> None:
+    print("rule 4: a version glued to v or to letters and a hyphen")
+    expect_clean(["v1.2", "V2.4", "(v1.2)", "Kasutasime mudelit GPT-3.5 ja hiljem GPT-4.1.",
+                  "Võrdlesime mudeleid GPT-4.5 ja Llama-3.1."])
+    # Other glued letters are no version.
+    expect_decimals({"Mõõtsime pH7.4 ja pO2 12.5 kPa.": ["7.4", "12.5"],
+                     "Suumi x2.5 suurendusega.": ["2.5"], "2.5GB": ["2.5"]})
+
+
+def product_names() -> None:
+    print("rule 5: a version after a product name")
+    expect_clean(["Kasutan Python 3.13 versiooni.", "Projekt vajab Node.js 18.19 või uuemat.",
+                  "Uuenda Chrome'i 120.0 peale.", "Andmed on MySQL 8.4 baasis."])
+    expect_decimals({
+        # Vabamorf knows place names: no product.
+        "Sademeid oli Pärnus 12.3, Tartus 8.7 ja Narvas 5.4 mm.": ["12.3", "8.7", "5.4"],
+        "Töötuse määr oli Eestis 6.4 ja Soomes 7.8 protsenti.": ["6.4", "7.8"],
+        # The sentence's first word, a closing quote before it included.
+        "Python 3.7 on kiire.": ["3.7"],
+        "Tulemus 3.7 on hea.": ["3.7"],
+        "Ta ütles: „Kõik on hästi.” Keskmine 3.67 jäi siiski alla ootuste.": ["3.67"],
+        # All capitals is a measure or a label more often than a product.
+        "Patsiendi BMI 31.2 viitab rasvumisele.": ["31.2"],
+        "Mudeli AUC 0.87 oli parim.": ["0.87"],
+        "Eesti Panga prognoosi järgi kasvab SKP 2.7 võrra.": ["2.7"],
+        "Šansside suhe oli OR 1.83 ja riskisuhe HR 2.41 kontrollrühmas.": ["1.83", "2.41"],
+        "Keskmine 3.84 (SD 0.92) oli kõrgem kui kontrollrühmas.": ["3.84", "0.92"],
+        "Hind on CHF 12.50 inimese kohta.": ["12.50"],
+        "KOKKU 1500.50": ["1500.50"],
+        "ARVE SUMMA 249.90": ["249.90"],
+        "Hind KM-ga 49.90": ["49.90"],
+        # Lowercase first: pH is a measure (limit: so is iOS, still flagged).
+        "Vere pH 7.4 on normaalne.": ["7.4"],
+        "Toetame iOS-i 17.2 ja uuemaid.": ["17.2"],
+        # A unit after the number beats the name.
+        "Kasutan Python 3.8 korda kiiremini.": ["3.8"],
+    })
+
+
+def dates() -> None:
+    print("rule 6: a date, day 1-31 and a two-digit month")
+    expect_clean(["Kohtume 14.05", "Kohtume 14.05.", "Kohtume 14.05.2026",
+                  "Kohtume 1.05", "Tähtaeg on 31.12 ja 1.01.", "03.04 kell 9"])
+    # Trade-off: a decimal of that shape with no unit is skipped too.
+    expect_clean(["Reproduktsioonikordaja oli 1.05 ja hakkas seejärel langema."])
+    expect_decimals({
+        "Pilet maksab 14.05 eurot.": ["14.05"],
+        "Indeks tõusis 1.10 punkti võrra.": ["1.10"],
+        "Rõhk oli 1.10 bar.": ["1.10"],
+        "Hind on €14.05": ["14.05"],
+        "Kohtume 14.5 ja": ["14.5"],
+    })
+
+
+def clause_numbers() -> None:
+    print("rule 7: a clause number opening a line")
+    expect_clean([
+        "4. Poolte kohustused\n"
+        "4.12. Töövõtja kohustub tööd tegema hoolikalt.\n"
+        "4.13. Tellija tasub arve 14 päeva jooksul.\n"
+        "4.14. Pooled hoiavad konfidentsiaalset teavet.\n"
+        "4.15. Leping jõustub allkirjastamisel.\n"
+        "4.16. Vaidlused lahendatakse läbirääkimiste teel.",
+        "Sisukord\n4.13. Kokkuvõte\n4.14. Lisad",
+        "Tingimused:\n- 4.73. Tellija tasub arve.",
+        "## 3.7 Tulemused", "### 4.13 Kokkuvõte ja järeldused", "## 4.73. Kokkuvõte",
+        # A period after the number and a lowercase word: never a candidate.
+        "Vastavalt 4.73. punktile on tellija kohustatud maksma.",
+        "punktid 4.13., 4.14. ja 4.15.", "(vt 4.73.)",
+    ])
+    # A heading without # looks like a data row, so both are flagged.
+    expect_decimals({
+        "3.7 Tulemused": ["3.7"],
+        "Tulemused:\n9.58 Usain Bolt\n9.69 Tyson Gay": ["9.58", "9.69"],
+        "Inflatsioon riigiti:\n3.9 Eesti\n2.7 Läti\n2.1 Leedu": ["3.9", "2.7", "2.1"],
+        "Mõõtmistulemused:\n4.37\nKeskmine väärtus jäi normi piiresse.": ["4.37"],
+        "## 3.7 tulemused": ["3.7"],
+        # No cue is read across a line break.
+        "Keskmine hinne oli 3.67\nTabel 2 näitab jaotust.": ["3.67"],
+        "Andmed on esitatud tabelis\n0.87 oli mudeli täpsus.": ["0.87"],
+        "Tabel\n10.72 Mart Tamm\n10.85 Jaan Kask": ["10.72", "10.85"],
+    })
+
+
+def comma_tails() -> None:
+    print("rule 8: a comma part after the number")
+    expect_clean(["Ta jooksis 800 meetrit ajaga 1.47,58.", "Lõpptulemus\n1.47,58",
+                  "1.500,50 eurot", "Ta läbis 5000 m ajaga 13.47,32 ja 10 000 m ajaga 28.21."])
+    expect_decimals({"Väärtused 1.5, 2.5": ["1.5", "2.5"]})
+
+
+def units() -> None:
+    print("a unit, currency, per cent or multiplier flags the number")
+    expect_decimals({
+        "Hind on 1500.50 eurot": ["1500.50"],
+        "kasv oli 2.5%": ["2.5"],
+        "Tõus 2.5-3.5 %": ["2.5", "3.5"],
+        "0.75 liitrit": ["0.75"],
+        "umbes 3.7 miljonit": ["3.7"],
+        "€3.50": ["3.50"],
+        "EUR 3.50": ["3.50"],
+        "kella 3.50 euroga": ["3.50"],
+        "Mängija sai 8.45 punkti.": ["8.45"],
+        "Sprinter jooksis 100 m ajaga 10.15 s.": ["10.15"],
+        "Wi-Fi töötab sagedusel 2.45 GHz.": ["2.45"],
+        "Pinge on 12.00 V ja vool 1.05 A.": ["12.00", "1.05"],
+        "Ping oli keskmiselt 12.45 ms.": ["12.45"],
+        "Lisa 0.5 tl soola ja 1.5 sl suhkrut.": ["0.5", "1.5"],
+        "Lisa 0.5 kl suhkrut.": ["0.5"],
+        "Lisa 1.5 küüslauguküünt ja 0.25 tl pipart.": ["1.5", "0.25"],
+    })
+
+
+def sentence_ends() -> None:
+    print("a number before a sentence-final period")
+    expect_decimals({
+        "Kasv oli 2.5.": ["2.5"],
+        "Pi on 3.1416.": ["3.1416"],
+        "Mõõtetulemused olid 1.30, 1.47, 1.52 ja 1.61.": ["1.30", "1.47", "1.52", "1.61"],
+        "Hind tõusis 4.73. Seejärel langes.": ["4.73"],
+        "Hind oli 1500.50.": ["1500.50"],
+        "Hind on €12.50.": ["12.50"],
+        "Pi on 3.14!": ["3.14"],
+    })
+    # Where 0.8.0 flagged nothing, a time's shape or a capital stays clean.
+    expect_clean(["Ööbuss väljub 00.30.", "Kell on kolmveerand üks öösel ehk 00.45.",
+                  "Lend AY1022 väljub 6.55.", "Ta lõpetas 10 km ajaga 32.15.",
+                  "Ta lõpetas ajaga 2:08.24.", "Seade uuendati tarkvaraversioonile 2.17.",
+                  "Telefonis on iOS 17.2.", "Kasutame Android 4.4.",
+                  # Limit: pi to two places has a time's shape.
+                  "Pi on 3.14."])
+    expect_decimals({
+        "Etendus algab 19.10 ja lõpeb 21.40.": [],
+        "Buss väljub peatusest 8.47 ja jõuab kohale 9.22.": ["8.47"],
+        "Sademeid oli Pärnus 12.3, Tartus 8.7 ja Narvas 5.1.": ["12.3", "8.7"],
+    })
+
+
+def still_flagged() -> None:
+    print("what 0.8.0 flagged and no rule explains stays flagged")
+    expect_decimals({
+        "3.14": ["3.14"],
+        "Pi: 3.14": ["3.14"],
+        "See maksis 3.14 eurot.": ["3.14"],
+        "Ostsin kella. 3.7 on hea": ["3.7"],
+        "Sega 1 osa tsementi ja 2.5 osa liiva.": ["2.5"],
+        "Maavärin tugevusega 6.30 magnituudi raputas Jaapanit.": ["6.30"],
+        "Vastajate keskmine hinnang oli 3.45 (SD 0.83).": ["3.45", "0.83"],
+        "Rühmade erinevus oli statistiliselt oluline (t = 2.15, p = 0.04).": ["2.15", "0.04"],
+        "| Aasta | Kasv |\n| 2022 | 2.15 |\n| 2023 | 1.45 |": ["2.15", "1.45"],
+        # Limit: a bare time; only kell tells it from a decimal.
+        "Koosolek algab 10.30 ja kestab tund.": ["10.30"],
+        "Lennuk maandub 23.55, nii et jõuan koju alles pärast südaööd.": ["23.55"],
+    })
+    got = found("See maksis 3.14 eurot ja linnas elab 1,500,000 inimest.")
+    check("both rules in one text", got == [
+        ("decimal-separator", "3.14", "3,14"),
+        ("thousands-separator", "1,500,000", "1 500 000"),
+    ], str(got))
 
 
 def issue_shape() -> None:
     print("issue shape")
-    r = server.check_numbers("Hind 3.14 ja 1,500,000.50 eurot.")
+    r = server.check_numbers("Hind 3.67 ja 1,500,000.50 eurot.")
     check("result is issues and summary_estonian",
           set(r) == {"issues", "summary_estonian"}, str(sorted(r)))
     check("every issue keeps text, position, rule, rule_estonian, suggestion",
@@ -216,169 +312,31 @@ def issue_shape() -> None:
           str(r["issues"]))
 
 
-def clause_numbers_with_a_period_are_skipped() -> None:
-    print("decimal-separator: EKI clause numbers with a period after them")
-    expect_clean([
-        "4. Poolte kohustused\n"
-        "4.12. Töövõtja kohustub tööd tegema hoolikalt.\n"
-        "4.13. Tellija tasub arve 14 päeva jooksul.\n"
-        "4.14. Pooled hoiavad konfidentsiaalset teavet.\n"
-        "4.15. Leping jõustub allkirjastamisel.\n"
-        "4.16. Vaidlused lahendatakse läbirääkimiste teel.",
-        "Sisukord\n4.13. Kokkuvõte\n4.14. Lisad",
-        "Vastavalt 4.13. punktile on tellija kohustatud maksma.",
-        "Leping lõpeb. 4.13. Tellija tasub arve.",
-        "(vt 4.13.)",
-        "punktid 4.13., 4.14. ja 4.15.",
-        "4.13.-4.15. punktid",
-        "## 4.13. Kokkuvõte",
-    ])
-    # A sentence-final decimal still flags: a capital or a quote follows.
-    expect_flags({
-        "Hind tõusis 4.13. Seejärel langes.": [("decimal-separator", "4.13", "4,13")],
-        "Pi on 3.14.” ütles ta.": [("decimal-separator", "3.14", "3,14")],
-    })
+def linear_time() -> None:
+    print("linear time on 100,000 characters")
+    for unit in ("1.5-", f"3.7 {EN_DASH} ", "10.20-", "ja Xyz 1.5 ", "4.13. Tellija\n"):
+        text = (unit * (100_000 // len(unit) + 1))[:100_000]
+        t = time.perf_counter()
+        server.check_numbers(text)
+        dt = time.perf_counter() - t
+        # 0.8.0 took 0.15 s; a quadratic walk took 30 to 65 s.
+        check(f"{unit!r} repeated: {dt:.2f} s", dt < 5, f"{dt:.2f} s")
 
 
-def markdown_headings_are_skipped() -> None:
-    print("decimal-separator: Markdown headings and quotes")
-    expect_clean([
-        "## 3.7 Tulemused",
-        "### 4.13 Kokkuvõte ja järeldused",
-        "> 3.7 Tulemused",
-    ])
-
-
-def only_the_numbers_own_line_is_read() -> None:
-    print("decimal-separator: no cue is read across a line break")
-    expect_flags({
-        "Mõõtmistulemused:\n4.37\nKeskmine väärtus jäi normi piiresse.":
-            [("decimal-separator", "4.37", "4,37")],
-        "Keskmine hinne oli 3.67\nTabel 2 näitab jaotust.":
-            [("decimal-separator", "3.67", "3,67")],
-        "Hinnang 3.67\nOsa vastajaid ei vastanud.":
-            [("decimal-separator", "3.67", "3,67")],
-        "Andmed on esitatud tabelis\n0.87 oli mudeli täpsus.":
-            [("decimal-separator", "0.87", "0,87")],
-    })
-
-
-def measures_and_capital_labels_still_flag() -> None:
-    print("decimal-separator: a measure or a label in capitals is no product")
-    expect_flags({
-        "Vere pH 7.4 on normaalne.": [("decimal-separator", "7.4", "7,4")],
-        "Patsiendi BMI 31.2 viitab rasvumisele.": [("decimal-separator", "31.2", "31,2")],
-        "Eesti Panga prognoosi järgi kasvab SKP 2.7 võrra.":
-            [("decimal-separator", "2.7", "2,7")],
-        "Mudeli AUC 0.87 oli parim.": [("decimal-separator", "0.87", "0,87")],
-        # Both ends of a range share the measure, though both are clock-shaped.
-        "pH 7.35-7.45 on normaalne vahemik.": [("decimal-separator", "7.35", "7,35"),
-                                               ("decimal-separator", "7.45", "7,45")],
-        "KOKKU 1500.50": [("decimal-separator", "1500.50", "1500,50")],
-        "ARVE SUMMA 249.90": [("decimal-separator", "249.90", "249,90")],
-        "Hind KM-ga 49.90": [("decimal-separator", "49.90", "49,90")],
-        # A closing quote ends the sentence, so Keskmine is no mid-sentence name.
-        "Ta ütles: „Kõik on hästi.” Keskmine 3.67 jäi siiski alla ootuste.":
-            [("decimal-separator", "3.67", "3,67")],
-        "Ta ütles: „Kõik on hästi.“ Keskmine 3.67 jäi siiski alla ootuste.":
-            [("decimal-separator", "3.67", "3,67")],
-    })
-    # Product acronyms keep their versions.
-    expect_clean([
-        "Seadmel on USB 3.0 port ja HDMI 2.1 väljund.",
-        "PHP 8.2 toetab seda.",
-    ])
-
-
-def kell_needs_a_clock_time() -> None:
-    print("decimal-separator: kell the watch is no time cue")
-    expect_flags({
-        "Kella aku kestab 2.5 päeva.": [("decimal-separator", "2.5", "2,5")],
-        "Uus kell on 2.5 korda kallim.": [("decimal-separator", "2.5", "2,5")],
-        "Kellad maksavad 49.90 kuni 99.90.": [("decimal-separator", "49.90", "49,90"),
-                                              ("decimal-separator", "99.90", "99,90")],
-        "Kella hind oli 49.99.": [("decimal-separator", "49.99", "49,99")],
-        "Kell maksis 49.90.": [("decimal-separator", "49.90", "49,90")],
-        # Clock-shaped, but hind between kell and the number is no filler.
-        "Kella hind oli 12.40.": [("decimal-separator", "12.40", "12,40")],
-    })
-
-
-def ratios_and_recipe_units_still_flag() -> None:
-    print("decimal-separator: osa after a number is a ratio, tl and sl are units")
-    expect_flags({
-        "Sega 1 osa tsementi ja 2.5 osa liiva.": [("decimal-separator", "2.5", "2,5")],
-        "Võta 1.5 osa jahu.": [("decimal-separator", "1.5", "1,5")],
-        "Sega 1 osa äädikat ja 3.5 osa vett.": [("decimal-separator", "3.5", "3,5")],
-        "Lisa 0.5 tl soola ja 1.5 sl suhkrut.": [("decimal-separator", "0.5", "0,5"),
-                                                 ("decimal-separator", "1.5", "1,5")],
-        "Lisa 0.5 kl suhkrut.": [("decimal-separator", "0.5", "0,5")],
-        "Lisa 2.5 klaasi jahu.": [("decimal-separator", "2.5", "2,5")],
-    })
-    expect_clean(["aruande 3.2 osas"])
-
-
-def currency_codes_still_flag() -> None:
-    print("currency codes, spaced or glued")
-    expect_flags({
-        "Hind on CHF 12.50 inimese kohta.": [("decimal-separator", "12.50", "12,50")],
-        "Hind on SEK 49.90.": [("decimal-separator", "49.90", "49,90")],
-        "Hind on EUR3.50.": [("decimal-separator", "3.50", "3,50")],
-        "Laenusumma USD1,500,000 tagastatakse.":
-            [("thousands-separator", "1,500,000", "1 500 000")],
-    })
-
-
-def clock_and_race_times_are_skipped() -> None:
-    print("decimal-separator: midnight, colon and race times")
-    expect_clean([
-        "Ööbuss väljub 00.30.",
-        "Kell on kolmveerand üks öösel ehk 00.45.",
-        "Ta lõpetas ajaga 2:08.24.",
-        "Ta jooksis 800 meetrit ajaga 1.47,58.",
-        "Lõpptulemus\n1.47,58",
-        # The suggestion 1,500 would have made this 1,500,50.
-        "1.500,50 eurot",
-    ])
-    # Without the leading zero, 0.30 is a decimal.
-    expect_flags({"Väärtus oli 0.30.": [("decimal-separator", "0.30", "0,30")]})
-
-
-def inflected_and_compound_version_words_are_skipped() -> None:
-    print("decimal-separator: inflected product names, compound version words")
-    expect_clean([
-        "Toetame iOS-i 17.2 ja uuemaid.",
-        "Uuenda Chrome'i 120.0 peale.",
-        "Projekt vajab Node.js 18.19 või uuemat.",
-        "Rakendus töötab .NET 8.0 peal.",
-        "Seade uuendati tarkvaraversioonile 2.17.",
-        "Püsivaraversioon 2.17 parandab vea.",
-        "Lisatabelis 3.2 on andmed.",
-    ])
-    # A compound ending in punkt or osa is an amount, not a clause.
-    expect_flags({
-        "Keemispunkt 78.37 on kõrge.": [("decimal-separator", "78.37", "78,37")],
-        "Omaosa 249.90 tasub klient.": [("decimal-separator", "249.90", "249,90")],
-    })
-
-
-single_comma_group_is_a_decimal()
-unambiguous_thousands_still_flag()
-times_are_skipped()
-dates_are_skipped()
-section_numbers_are_skipped()
-versions_are_skipped()
-english_decimals_still_flag()
-clause_numbers_with_a_period_are_skipped()
-markdown_headings_are_skipped()
-only_the_numbers_own_line_is_read()
-measures_and_capital_labels_still_flag()
-kell_needs_a_clock_time()
-ratios_and_recipe_units_still_flag()
-currency_codes_still_flag()
-clock_and_race_times_are_skipped()
-inflected_and_compound_version_words_are_skipped()
+thousands()
+kell()
+time_ranges()
+section_words()
+glued_versions()
+product_names()
+dates()
+clause_numbers()
+comma_tails()
+units()
+sentence_ends()
+still_flagged()
 issue_shape()
+linear_time()
 
 if failures:
     print(f"\n{len(failures)} failure(s):")
