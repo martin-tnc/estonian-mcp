@@ -893,139 +893,38 @@ _COMMA_BEFORE: frozenset[str] = frozenset({
     "mistõttu", "millepärast", "kuhu",
 })
 
-# Punctuation that already sets off what follows it.
-_CLAUSE_PUNCT: frozenset[str] = frozenset({
-    ",", ";", ":", "(", "\u2014", "\u2013", "-", ".", "!", "?", "...", "…",
-})
-
-# The word after one of these opens a sentence.
-_SENTENCE_END: frozenset[str] = frozenset({".", "!", "?", "...", "…"})
-
-# Quotation marks: the word after an opening one starts a quoted sentence.
-_QUOTES: frozenset[str] = frozenset({"„", "“", "”", '"', "«", "»", "‚", "‘", "’", "'"})
-
-# A conjunction right before a subordinator takes the clause comma in
-# front of itself: `..., ja et ...`, `sest et`, `aga kuna` (EKI teatmik,
-# Koma: koma nihkumine). `vaid` is left out: it is also the adverb
-# "only" (tahan vaid, et ...).
-_COMMA_MOVES_BEFORE: frozenset[str] = frozenset({
-    "ja", "ning", "ega", "ehk", "või", "aga", "kuid", "ent", "sest", "et",
-    "kui", "nagu", "kuna", "kuigi", "ehkki",
-})
-
-# Coordinators that, between two main clauses, take the comma of a
-# subordinate clause opening the second one (EKI, koma nihkumine:
-# Sõlmin kingapaelad lahti, ja enne kui panen ..., pühin ...). `aga`
-# and `ent` take one before them whenever they join clauses.
-_SHIFT_COORDINATORS: frozenset[str] = frozenset({"ja", "ning", "või", "aga", "ent"})
-_COORDINATORS: frozenset[str] = _SHIFT_COORDINATORS | {"ega", "ehk", "kuid", "vaid"}
-
-# Two-part connectives whose second part is in _COMMA_BEFORE, keyed by
-# the first part (EKI teatmik, Koma: ühendsidendid). The comma goes
-# before the whole connective (Sadas vihma, nii et jäime koju) or, for
-# `open` and `adverb` ones, between the parts when the first part
-# belongs to the main clause (Tulin selleks, et aidata).
-#   open:       either place is right.
-#   adverb:     read as the main verb's own adverb, comma between, when
-#               a finite verb stands right before it (Tegin nii, et ...),
-#               for ainult a verb whose object an et clause can be
-#               (Tahan ainult, et ...; but Kõik töötab, ainult et ...).
-#   closed:     never a comma between (Ta lahkus, ilma et ...), so a
-#               focus particle before one does not move the comma.
-#   indefinite: `ükskõik kuhu` (= kuhu tahes) opens no clause; only the
-#               predicative `on ükskõik, kuhu ...` takes a comma.
-_ET: frozenset[str] = frozenset({"et"})
-_CONNECTIVES: dict[tuple[str, ...], tuple[frozenset[str], str]] = {
-    ("nii",): (frozenset({"et", "nagu"}), "adverb"),
-    ("ainult",): (_ET, "adverb"),
-    ("selleks",): (_ET, "open"),
-    ("sellepärast",): (_ET, "open"),
-    ("seepärast",): (_ET, "open"),
-    ("seetõttu",): (_ET, "open"),
-    ("eeldusel",): (_ET, "open"),
-    ("tingimusel",): (_ET, "open"),
-    ("selle", "asemel"): (_ET, "open"),
-    ("hoolimata", "sellest"): (_ET, "open"),
-    ("olenemata", "sellest"): (_ET, "open"),
-    ("vaatamata", "sellele"): (_ET, "open"),
-    ("ilma",): (_ET, "closed"),
-    ("olgugi",): (_ET, "closed"),
-    ("vaevalt",): (_ET, "closed"),
-    ("mitte",): (_ET, "closed"),
-    ("peaasi",): (_ET, "closed"),
-    ("ükskõik",): (frozenset({"kuhu"}), "indefinite"),
+# Two-part connectives (EKI teatmik, Koma: ühendsidendid): the first parts
+# that can stand right before the subordinator. A comma before the whole
+# connective sets it off (Sadas vihma, nii et jäime koju).
+_PAIR_FIRST: dict[str, frozenset[tuple[str, ...]]] = {
+    "et": frozenset({
+        ("nii",), ("ilma",), ("olgugi",), ("selleks",), ("sellepärast",),
+        ("seepärast",), ("seetõttu",), ("vaevalt",), ("peaasi",), ("ainult",),
+        ("mitte",), ("selle", "asemel"), ("hoolimata", "sellest"),
+        ("olenemata", "sellest"), ("vaatamata", "sellele"),
+    }),
+    "nagu": frozenset({("nii",)}),
 }
 
-# A connective's first part right after one of these particles is
-# stressed and belongs to the main clause, so the comma goes between the
-# parts (Tulin just selleks, et aidata; mitte selleks, et ..., vaid ...).
-# A comma before the particle sets off the clause too (..., ka ilma et).
-_FOCUS_PARTICLES: frozenset[str] = frozenset({
-    "just", "täpselt", "ka", "ikka", "mitte", "ainult", "vaid", "üksnes",
-    "eriti", "eelkõige", "eeskätt", "peamiselt", "lihtsalt", "nimelt",
-})
+# First parts a comma never separates from et (Ta lahkus, ilma et oleks
+# hüvasti jätnud), so the comma they lack goes before them.
+_PAIR_UNSPLIT: frozenset[str] = frozenset({"ilma", "olgugi"})
 
-# Verbs whose object an et clause can be, so `ainult` right after one is
-# the verb's own adverb (Tahan ainult, et sa tuleksid; Mäletan ainult,
-# et oli külm). After any other verb `ainult et` is the connective
-# (= except that).
-_ET_OBJECT_VERBS: frozenset[str] = frozenset({
-    "tahtma", "soovima", "lootma", "paluma", "nõudma", "ootama", "vajama",
-    "ütlema", "teadma", "arvama", "mõtlema", "mäletama", "märkima",
-    "lisama", "teatama", "kinnitama", "rõhutama", "mainima", "küsima",
-    "nägema", "kuulma", "tundma", "uskuma", "kartma", "tähendama",
-    "näitama", "selgitama", "meenutama", "hoolitsema", "jälgima",
-    "vaatama", "taotlema", "eeldama", "unistama", "teadvustama",
-})
+# Quotation marks. One not glued to the word before it (sõna“) opens a
+# quotation, and the word after it starts a sentence.
+_QUOTE_MARKS: frozenset[str] = frozenset({"„", "“", "”", '"', "«", "»"})
 
-# Closed connectives whose parts a comma never separates, so an existing
-# `ilma, et` is an error. `peaasi, et` can be `peaasi (on), et`.
-_NO_COMMA_INSIDE: frozenset[str] = frozenset({"ilma", "olgugi"})
+# What ends the clause a nagu opens: clause punctuation, a coordinator,
+# or a subordinator.
+_CLAUSE_MARKS: frozenset[str] = frozenset(",;:.!?…()[]-\u2013\u2014")
+_NAGU_CLAUSE_END: frozenset[str] = _COMMA_BEFORE | {
+    "ja", "ning", "ega", "või", "ehk", "kuid", "aga",
+}
 
-# Verbs that take the weather, ilm, as their object (Ootasime ilma, et
-# minna randa), and pronouns that modify it like an adjective.
-_ILM_VERBS: frozenset[str] = frozenset({
-    "ootama", "lootma", "nautima", "kartma", "ennustama", "jälgima",
-    "vaatama", "soovima", "tellima",
-})
-_ADJECTIVAL_PRONOUNS: frozenset[str] = frozenset({
-    "selline", "niisugune", "seesugune", "säärane", "samasugune",
-    "teistsugune", "mingi", "missugune", "milline",
-})
-
-# Comparative adverbs: a `kui` after one compares (töötas rohkem kui
-# keegi teine) and opens no clause.
-_COMPARATIVE_ADVERBS: frozenset[str] = frozenset({
-    "rohkem", "vähem", "enam", "kauem", "varem", "hiljem", "pigem", "teisiti",
-})
-
-# Verbs of an inverted reporting clause (..., teatas minister), which
-# can follow a subordinate clause without opening a main clause.
-_REPORTING_VERBS: frozenset[str] = frozenset({
-    "ütlema", "teatama", "lisama", "kinnitama", "rõhutama", "märkima",
-    "sõnama", "selgitama", "vastama", "rääkima", "kommenteerima", "nentima",
-    "tõdema", "arvama", "leidma", "hoiatama", "kirjutama", "küsima",
-    "täpsustama", "meenutama",
-})
-
-# Vabamorf finite forms that cannot have a third-person subject: a verb
-# in one of these after `Tee nagu` makes Tee the imperative, not the
-# noun (Tee nagu tahad; but Tee nagu kohv sisaldab kofeiini).
-_FIRST_SECOND_PERSON_FORMS: frozenset[str] = frozenset({
-    "n", "d", "me", "te", "sin", "sime", "site", "ksin", "ksime", "ksite",
-    "nuksin", "nuksime", "nuksite", "ge", "gem",
-})
-
-# Words that open a clause of their own, so a finite verb after them is
-# not the verb of a `nagu` phrase before them.
-_CLAUSE_OPENERS: frozenset[str] = frozenset({
-    "kes", "mis", "kus", "kuhu", "kust", "kuidas", "millal", "miks",
-    "milline", "missugune", "kumb", "kas", "mistõttu", "millepärast",
-})
-
-# Vabamorf verb form codes that are no predicate on their own:
-# infinitives, the des and mata forms, participles.
-_NONFINITE_VERB_FORMS: frozenset[str] = frozenset({
+# Vabamorf verb form codes that are no predicate: the infinitives and
+# supines, the des form, the participles. Every other verb code is a
+# personal or impersonal form in some mood, or a negation (ei, pole).
+_NONFINITE_FORMS: frozenset[str] = frozenset({
     "da", "des", "ma", "mas", "mast", "maks", "mata", "tama",
     "nud", "tud", "v", "tav",
 })
@@ -2849,289 +2748,48 @@ def check_compounds(text: Annotated[str, Field(description="Estonian text.")]) -
     return _check_compounds(text)
 
 
-@lru_cache(maxsize=4096)
-def _readings_out_of_context(word: str) -> tuple[tuple[str, str, str], ...]:
-    """Every Vabamorf reading of `word` as (lemma, pos, form), undisambiguated.
-
-    The sentence-level disambiguation keeps one reading, sometimes the
-    wrong one: `tuli` in `punane nagu tuli` becomes the verb, and the
-    imperative in `Tee nagu tahad` becomes the noun.
-    """
-    found = _vabamorf().analyze([word], disambiguate=False, guess=True, propername=True)
-    rows = (found[0].get("analysis") or []) if found else []
-    return tuple((r["lemma"], r["partofspeech"], r["form"]) for r in rows)
-
-
-def _finite_form(form: str) -> bool:
-    """True for a Vabamorf verb form code that is a predicate: a personal
-    or impersonal form in any mood, or a negation (`neg ...`: ei, pole)."""
-    return form.startswith("neg") or (form != "" and form not in _NONFINITE_VERB_FORMS)
-
-
-def _finite_in_context(span) -> bool:
-    """The sentence-level analysis reads `span` as a finite verb."""
-    return any(a.partofspeech == "V" and _finite_form(a.form) for a in span.annotations)
-
-
-def _verb_only(word: str) -> bool:
-    """Out of context `word` is nothing but a verb or a participle
-    (`vajavad` is also the plural of `vajav`), not also a noun (tuli)."""
-    return all(pos in ("V", "A") for _lemma, pos, _form in _readings_out_of_context(word))
-
-
-def _sentence_start(spans: list, k: int) -> bool:
-    """spans[k] opens the text, a sentence or a quotation."""
-    return k == 0 or spans[k - 1].text in _SENTENCE_END or spans[k - 1].text in _QUOTES
-
-
-def _maybe_finite(spans: list, k: int) -> bool:
-    """spans[k] is read as a finite verb, or opens a sentence and is one out
-    of context: the disambiguation reads a sentence-initial imperative as a
-    noun (Tee nii, et ...). Pronouns (Sina, also an imperative) do not count."""
-    span = spans[k]
-    if _finite_in_context(span):
-        return True
-    if not _sentence_start(spans, k):
-        return False
-    return (not any(a.partofspeech == "P" for a in span.annotations)
-            and any(pos == "V" and _finite_form(form)
-                    for _lemma, pos, form in _readings_out_of_context(span.text)))
-
-
-def _clause_boundary(span) -> bool:
-    """Punctuation, a conjunction, or a word that opens a clause."""
-    if not any(ch.isalnum() for ch in span.text):
-        return True
-    return any(a.partofspeech == "J" or a.lemma in _CLAUSE_OPENERS for a in span.annotations)
-
-
-def _subject_or_adverb(span) -> bool:
-    """A nominative noun or pronoun, or an adverb, in context."""
-    return any(a.partofspeech == "D"
-               or (a.partofspeech in ("S", "P", "H", "Y") and a.form in ("sg n", "pl n"))
-               for a in span.annotations)
-
-
-def _predicate_at(spans: list, opener: int, k: int) -> bool:
-    """spans[k], in the clause opened by spans[opener], is a finite verb.
-    A third-person form that is also a noun out of context (tuli, võis,
-    palus) counts only after a subject or an adverb (nagu ta palus, nagu
-    hiljem selgus) or before an infinitive or participle (nagu võis
-    arvata), so the noun of a comparison (punane nagu tuli) does not."""
-    span = spans[k]
-    if not _finite_in_context(span):
-        return False
-    if span.text.lower() == "ei" or _verb_only(span.text) or any(
-            a.form in _FIRST_SECOND_PERSON_FORMS for a in span.annotations):
-        return True
-    if any(_subject_or_adverb(spans[b]) for b in range(opener + 1, k)):
-        return True
-    return k + 1 < len(spans) and any(
-        a.partofspeech == "V" and a.form in _NONFINITE_VERB_FORMS
-        for a in spans[k + 1].annotations)
-
-
-def _clause_predicates(spans: list, opener: int) -> tuple[list[int], int]:
-    """The finite predicates after spans[opener] up to the next boundary,
-    and where that boundary is. A negation and its verb (ei tea, ära tee)
-    are one predicate; `pole` is one on its own."""
-    found: list[int] = []
-    negated = False
-    k = opener + 1
-    while k < len(spans) and not _clause_boundary(spans[k]):
-        if negated and any(a.partofspeech == "V" for a in spans[k].annotations):
-            negated = False
-            if _finite_in_context(spans[k]):
-                k += 1
-                continue
-        if _predicate_at(spans, opener, k):
-            found.append(k)
-            negated = any(a.lemma in ("ei", "ära") and a.form.startswith("neg")
-                          for a in spans[k].annotations)
-        k += 1
-    return found, k
-
-
-def _comparative_kui(spans: list, k: int) -> bool:
-    """`kui` at spans[k] compares (paremad kui eelmisel aastal; rohkem
-    kui keegi teine): a comparative stands at most two words before it."""
-    for b in (k - 1, k - 2):
-        if b < 0 or _clause_boundary(spans[b]):
-            return False
-        if any(a.partofspeech == "C" or a.lemma in _COMPARATIVE_ADVERBS
-               for a in spans[b].annotations) or spans[b].text.lower().endswith("mini"):
-            return True
-    return False
-
-
-def _main_verb_before(spans: list, i: int, after_forms: set[str]) -> bool:
-    """The clause before the `nagu` at spans[i] has a finite verb of its
-    own. A sentence-initial word that is a noun as well as an imperative
-    (Tee, Luba) counts as the verb when `nii` follows it or the verb after
-    nagu cannot have a third-person subject (Tee nagu tahad; but Tee nagu
-    kohv sisaldab kofeiini)."""
-    k = i - 1
-    while k >= 0:
-        span = spans[k]
-        if _clause_boundary(span):
-            if span.text.lower() == "kui" and _comparative_kui(spans, k):
-                k -= 1
-                continue
-            return False
-        if _sentence_start(spans, k):
-            readings = _readings_out_of_context(span.text)
-            if (any(a.partofspeech == "P" for a in span.annotations)
-                    or not any(pos == "V" and _finite_form(form) for _l, pos, form in readings)):
-                return False
-            return (_verb_only(span.text)
-                    or (k + 1 < len(spans) and spans[k + 1].text.lower() == "nii")
-                    or bool(after_forms & _FIRST_SECOND_PERSON_FORMS))
-        if _finite_in_context(span):
-            return True
-        k -= 1
-    return False
-
-
-def _nagu_opens_clause(spans: list, i: int) -> bool:
-    """`nagu` at spans[i] opens a clause, which takes a comma, rather than
-    a verbless comparison, which takes none (EKI: Vaatas mind, nagu oleksin
-    võõras; Vaatas mind nagu võõrast). A finite verb must follow before the
-    next boundary, and the main clause must have one of its own, or the
-    verb after is the main clause's (Kassid nagu kõik koduloomad vajavad
-    hoolitsust). Two after it are the clause's and the main clause's
-    (Eesti majandus nagu analüütikud ennustasid kasvas).
-    """
-    found, _end = _clause_predicates(spans, i)
-    if len(found) >= 2:
-        return True
-    if not found:
-        return False
-    forms = {a.form for a in spans[found[0]].annotations if a.partofspeech == "V"}
-    return _main_verb_before(spans, i, forms)
-
-
-def _finite_before(spans: list, k: int) -> bool:
-    """A finite verb stands in the clause before spans[k]."""
-    b = k - 1
-    while b >= 0 and not _clause_boundary(spans[b]):
-        if _finite_in_context(spans[b]):
-            return True
-        b -= 1
-    return False
-
-
-def _opened_by_subordinator(spans: list, k: int) -> bool:
-    """The clause that spans[k] stands in opens with a subordinator or a
-    relative word, not with punctuation or a coordinator."""
-    b = k - 1
-    while b >= 0 and not _clause_boundary(spans[b]):
-        b -= 1
-    return (b >= 0 and any(ch.isalnum() for ch in spans[b].text)
-            and spans[b].text.lower() not in _COORDINATORS)
-
-
-def _joins_main_clauses(spans: list, i: int) -> bool:
-    """The subordinate clause opened at spans[i] is followed by the rest of
-    a main clause: two predicates before the next boundary (aga et oli
-    hilja kirjutasin kirja), or one and then a comma and a verb (aga kuna
-    oli hilja, jäin koju). A reporting verb there (..., teatas minister)
-    is no evidence: the clauses may be its object."""
-    found, end = _clause_predicates(spans, i)
-    if len(found) >= 2:
-        verb = found[1]
-    elif found and end + 1 < len(spans) and spans[end].text == ",":
-        verb = end + 1
-    else:
-        return False
-    return _finite_in_context(spans[verb]) and not any(
-        a.lemma in _REPORTING_VERBS and a.form not in _FIRST_SECOND_PERSON_FORMS
-        for a in spans[verb].annotations)
-
-
-def _ilma_is_noun(spans: list, s: int) -> bool:
-    """`ilma` at spans[s] is the noun ilm: an adjective modifies it (sooja
-    ilma; not midagi uut ilma et), it is the object of a verb such as
-    ootama, or the disambiguation reads it as ilm right after a verb."""
-    if s == 0 or not any(ch.isalnum() for ch in spans[s - 1].text):
-        return False
-    prev = spans[s - 1]
-    # An adjective in the genitive or partitive in context (sooja, the
-    # disambiguation's noun soe), not a predicative one (oli vaba ilma et).
-    if ((any(a.form in ("sg g", "sg p") for a in prev.annotations)
-            and any(pos in ("A", "C", "U") for _lemma, pos, _form
-                    in _readings_out_of_context(prev.text)))
-            or any(a.lemma in _ADJECTIVAL_PRONOUNS for a in prev.annotations)):
-        return not (s >= 2 and any(a.lemma in ("miski", "keegi")
-                                   for a in spans[s - 2].annotations))
-    if any(a.lemma in _ILM_VERBS for a in prev.annotations):
-        return True
-    return (any(a.lemma == "ilm" for a in spans[s].annotations)
-            and any(a.partofspeech == "V" for a in prev.annotations))
-
-
-def _ilma_in_main_clause(spans: list, s: int) -> bool:
-    """`ilma` at spans[s] is not the first part of `ilma et`: it is the noun
-    ilm (ootas ilusat ilma, et minna randa) or the main clause's adverb
-    after jääma, olema or an elative (jäi ilma, et teised saaksid; jäi
-    rahast ilma)."""
-    if _ilma_is_noun(spans, s):
-        return True
-    return s > 0 and any(a.lemma in ("jääma", "olema") or a.form.split()[-1:] == ["el"]
-                         for a in spans[s - 1].annotations)
-
-
-def _ainult_after_object_verb(spans: list, first: int) -> bool:
-    """`ainult` at spans[first] follows, past any adverbs, a verb whose
-    object an et clause can be (Tahan ainult, et ...), or `vaja`."""
-    b = first - 1
-    while b >= 0 and not _clause_boundary(spans[b]):
-        if any(a.partofspeech == "V" for a in spans[b].annotations):
-            return any(a.lemma in _ET_OBJECT_VERBS for a in spans[b].annotations)
-        if spans[b].text.lower() in ("vaja", "tarvis"):
-            return True
-        if not any(a.partofspeech == "D" for a in spans[b].annotations):
-            return False
-        b -= 1
-    return False
-
-
-def _first_part_in_main_clause(spans: list, lowers: list[str], first: int, kind: str) -> bool:
-    """The connective's first part at spans[first] belongs to the main
-    clause, so the comma goes before `et` as for a lone conjunction: it
-    follows a focus particle (Tulin just selleks, et ...), it is nii right
-    after a finite verb (Tegin nii, et ...) or ainult after a verb that
-    takes an et clause (Tahan ainult, et ...), or it is ilma as a noun or
-    the main clause's adverb. A closed connective never splits (Ta lahkus
-    lihtsalt, ilma et ...)."""
-    if kind == "closed":
-        return lowers[first] == "ilma" and _ilma_in_main_clause(spans, first)
-    if lowers[first - 1] in _FOCUS_PARTICLES:
-        return True
-    if lowers[first] == "ainult":
-        return _ainult_after_object_verb(spans, first)
-    return kind == "adverb" and _maybe_finite(spans, first - 1)
-
-
-def _predicative_ukskoik(spans: list, first: int, i: int) -> bool:
-    """`ükskõik` at spans[first] is the predicative `on ükskõik` (= does
-    not matter), past any adverbs (Mulle on täiesti ükskõik), and the
-    `kuhu` at spans[i] opens a clause with a finite verb."""
-    b = first - 1
-    while b >= 0 and any(ch.isalnum() for ch in spans[b].text) and all(
-            a.partofspeech == "D" for a in spans[b].annotations):
-        b -= 1
-    return (b >= 0 and any(a.lemma == "olema" for a in spans[b].annotations)
-            and bool(_clause_predicates(spans, i)[0]))
-
-
-def _connective_start(lowers: list[str], i: int) -> tuple[int, str] | None:
-    """Where a two-part connective ending at lowers[i] starts, and its kind."""
+def _pair_start(spans: list, i: int) -> int | None:
+    """Where the two-part connective ending in the subordinator at spans[i]
+    (nii et, selle asemel et, nii nagu) starts, if it is one."""
+    firsts = _PAIR_FIRST.get(spans[i].text.lower(), frozenset())
     for n in (2, 1):
-        if i >= n:
-            entry = _CONNECTIVES.get(tuple(lowers[i - n:i]))
-            if entry is not None and lowers[i] in entry[0]:
-                return i - n, entry[1]
+        if i >= n and tuple(s.text.lower() for s in spans[i - n:i]) in firsts:
+            return i - n
     return None
+
+
+def _opening_quote(spans: list, k: int) -> bool:
+    """spans[k] is a quotation mark not glued to a word before it, which
+    would close a quotation (sõna“): what follows it starts a sentence."""
+    return spans[k].text in _QUOTE_MARKS and (
+        k == 0 or spans[k - 1].end < spans[k].start or not spans[k - 1].text[-1].isalnum())
+
+
+@lru_cache(maxsize=4096)
+def _may_be_finite(word: str) -> bool:
+    """Some lexicon reading of `word` is a finite verb. Read out of context,
+    as the sentence analysis keeps one reading of a homograph: sõnas,
+    lisas, selgus and tuli are nouns there as often as verbs."""
+    found = _vabamorf().analyze([word], disambiguate=False, guess=False, propername=False)
+    return any(r["partofspeech"] == "V" and r["form"] not in _NONFINITE_FORMS
+               for r in (found[0].get("analysis") or []))
+
+
+def _verb_after(spans: list, i: int) -> bool:
+    """A word after the nagu at spans[i], before the clause punctuation,
+    coordinator or subordinator that ends its clause, can be a finite verb.
+    Then nagu opens a clause (Vaatas mind, nagu oleksin võõras), not a
+    verbless comparison, which takes no comma (tugev nagu karu)."""
+    for k in range(i + 1, len(spans)):
+        span = spans[k]
+        if span.text.lower() in _NAGU_CLAUSE_END or (
+                not any(ch.isalnum() for ch in span.text)
+                and not _CLAUSE_MARKS.isdisjoint(span.text)):
+            return False
+        if any(a.partofspeech == "V" and a.form not in _NONFINITE_FORMS
+               for a in span.annotations) or _may_be_finite(span.text):
+            return True
+    return False
 
 
 def _check_punctuation(text: str) -> dict:
@@ -3141,87 +2799,37 @@ def _check_punctuation(text: str) -> dict:
     t = Text(text)
     t.tag_layer(["morph_analysis"])
     spans = list(t.morph_analysis)
-    lowers = [span.text.lower() for span in spans]
-
-    def after_punct(k: int) -> bool:
-        return k == 0 or spans[k - 1].text in _CLAUSE_PUNCT or spans[k - 1].text in _QUOTES
-
-    def opens_clause(k: int) -> bool:
-        # Nothing before spans[k] calls for a comma: it starts the text, a
-        # sentence or a quotation, follows punctuation (also past a focus
-        # particle: ..., ka ilma et), or follows a conjunction that takes
-        # the comma in front of itself.
-        return (after_punct(k) or lowers[k - 1] in _COMMA_MOVES_BEFORE
-                or (lowers[k - 1] in _FOCUS_PARTICLES and after_punct(k - 1)))
-
-    def missing_comma(start: int, end: int) -> dict:
-        words = " ".join(span.text for span in spans[start:end + 1])
-        return {
-            "word": words,
-            "position": spans[start].start,
-            "rule": "comma-before-clause-conjunction",
-            "rule_estonian": "koma alistava sidesõna ees",
-            "suggestion": f", {words}",
-        }
 
     issues: list[dict] = []
-    for i in range(1, len(spans)):
-        if lowers[i] not in _COMMA_BEFORE:
+    skip_prev = {",", ";", ":", "(", "\u2014", "\u2013", "-", ".", "!", "?", "...", "…"}
+    for i, span in enumerate(spans):
+        word_lower = span.text.lower()
+        if word_lower not in _COMMA_BEFORE:
             continue
-        # `ilma, et`: the comma belongs before the whole connective.
-        if (lowers[i] == "et" and i >= 2 and spans[i - 1].text == ","
-                and lowers[i - 2] in _NO_COMMA_INSIDE
-                and not (lowers[i - 2] == "ilma" and _ilma_in_main_clause(spans, i - 2))):
-            first, conj = spans[i - 2].text, spans[i].text
-            issues.append({
-                "word": f"{first}, {conj}",
-                "position": spans[i - 2].start,
-                "rule": "no-comma-inside-conjunction",
-                "rule_estonian": "ühendsidendi osade vahele koma ei panda",
-                "suggestion": (f"{first} {conj}" if opens_clause(i - 2)
-                               else f", {first} {conj}"),
-            })
+        if i == 0:
             continue
-        if lowers[i] == "nagu" and not _nagu_opens_clause(spans, i):
+        prev = spans[i - 1]
+        if prev.text in skip_prev:
             continue
-        # kuhu tahes, kuhu iganes (= anywhere) opens no clause.
-        if (lowers[i] == "kuhu" and i + 1 < len(spans)
-                and lowers[i + 1] in ("tahes", "iganes")
-                and not _clause_predicates(spans, i + 1)[0]):
-            continue
-        c = i - 1
-        if lowers[c] in _SHIFT_COORDINATORS and not opens_clause(c) and _finite_before(spans, c):
-            # The comma moves before the coordinator when it joins main
-            # clauses; `aga` right after a verb may be the particle
-            # (Hiljem selgus aga, et ...), and then it stays before et.
-            if (lowers[c] == "ent" or _joins_main_clauses(spans, i)
-                    or (lowers[c] == "aga" and _opened_by_subordinator(spans, c))):
-                issues.append(missing_comma(c, i))
-            elif lowers[c] == "aga" and _finite_in_context(spans[c - 1]):
-                issues.append(missing_comma(i, i))
-            continue
-        if opens_clause(i):
-            continue
-        start = i
-        connective = _connective_start(lowers, i)
-        if connective is not None:
-            first, kind = connective
-            if opens_clause(first):
-                # The comma stands before the whole connective, or the
-                # connective opens the sentence, where none is needed.
+        word, position = span.text, span.start
+        first = _pair_start(spans, i)
+        if first is not None:
+            # A comma, the sentence start or an opening quotation mark
+            # before the whole connective sets it off.
+            if first == 0 or spans[first - 1].text in skip_prev or _opening_quote(spans, first - 1):
                 continue
-            if (lowers[first] == "nii" and i + 2 < len(spans) and lowers[i + 1] == "suu"
-                    and any(a.lemma == "suitsema" for a in spans[i + 2].annotations)):
-                # EKI: the idiom `valetab nii et suu suitseb` takes none.
-                continue
-            if kind == "indefinite":
-                # ükskõik kuhu = kuhu tahes; only `on ükskõik, kuhu ...`
-                # (= does not matter) has a clause after ükskõik.
-                if not _predicative_ukskoik(spans, first, i):
-                    continue
-            elif not _first_part_in_main_clause(spans, lowers, first, kind):
-                start = first
-        issues.append(missing_comma(start, i))
+            if spans[first].text.lower() in _PAIR_UNSPLIT:
+                position = spans[first].start
+                word = text[position:span.end]
+        if word_lower == "nagu" and not _verb_after(spans, i):
+            continue
+        issues.append({
+            "word": word,
+            "position": position,
+            "rule": "comma-before-clause-conjunction",
+            "rule_estonian": "koma alistava sidesõna ees",
+            "suggestion": f", {word}",
+        })
 
     return {
         "issues": issues,
@@ -3241,11 +2849,11 @@ def _check_punctuation(text: str) -> dict:
 @_counted
 def check_punctuation(text: Annotated[str, Field(description="Estonian text.")]) -> _CheckResult:
     """Flags a missing comma before et, kuna, sest, kuigi, kuid, vaid, nagu,
-    mistõttu, millepärast or kuhu, and before the whole of a connective
-    such as nii et, ilma et or selleks et.
+    mistõttu, millepärast or kuhu. A comma before a pair (nii et, ilma et)
+    passes, and nagu is flagged only before a clause with a verb.
 
-    Not checked: kui, mis, kes (their comma depends on meaning), nagu with
-    no finite verb after it, list and apposition commas, dashes, colons.
+    Not checked: kui, mis, kes (their comma depends on meaning), list and
+    apposition commas, dashes, colons.
     """
     return _check_punctuation(text)
 
