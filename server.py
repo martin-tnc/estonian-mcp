@@ -1765,6 +1765,31 @@ def _synthesize(lemma: str, form: str, pos: str = "", hint: str = "") -> list[st
     return list(dict.fromkeys(got))
 
 
+def _lexicon_readings(word: str) -> list[dict]:
+    """Vabamorf's readings of `word` from its lexicon alone: no guesser, and
+    none of the proper-name heuristics that make a name of any capitalised
+    word. Empty when the lexicon does not know the word."""
+    try:
+        return _vabamorf().analyze([word], disambiguate=False, guess=False,
+                                   propername=False)[0].get("analysis") or []
+    except Exception:
+        return []
+
+
+def _lexicon_names(word: str) -> list[str]:
+    """The proper-noun lemmas the lexicon itself gives `word`, leaving out
+    the entries it lists only as an indeclinable name part (form `?`: New,
+    San, Franz)."""
+    return list(dict.fromkeys(
+        a["lemma"] for a in _lexicon_readings(word)
+        if a.get("partofspeech") == "H" and a.get("form") != "?"))
+
+
+def _name_inflects(lemma: str) -> bool:
+    """Whether the lexicon can inflect the proper noun `lemma` at all."""
+    return bool(_synthesize(lemma, "sg n", "H") or _synthesize(lemma, "pl n", "H"))
+
+
 def _corpus_ranks() -> dict | None:
     """fastText vocabulary as {surface: frequency rank}, or None when the
     model is not installed.
@@ -1780,7 +1805,8 @@ def _corpus_ranks() -> dict | None:
         return None
 
 
-def _rank_paradigm_keys(keys: list[str]) -> tuple[list[str], bool]:
+def _rank_paradigm_keys(keys: list[str], pos: str = "",
+                        lemma: str = "") -> tuple[list[str], bool]:
     """Order homonymous paradigms by corpus attestation, best first.
 
     Vabamorf's candidate order is lexicon order, not a preference ranking:
@@ -1792,10 +1818,12 @@ def _rank_paradigm_keys(keys: list[str]) -> tuple[list[str], bool]:
     no model installed the order is Vabamorf's, unchanged, and the caller
     is told so rather than being handed a silent guess.
 
-    Keys are looked up as generated. The vocabulary keeps case (`Tallinn`
-    and `tallinn` are separate entries), so lowercasing a name's key finds
-    nothing for `Yorgi` and `Yorki`, both attested, and would tell the
-    caller there was no frequency data.
+    A name's keys (`pos` H) are looked up as spelled. The vocabulary keeps
+    case, so the lowercased `yorgi` and `yorki` find nothing where `Yorgi`
+    and `Yorki` are both attested. The name's own nominative is not
+    counted: `Jane` is also the key of the `Jane : Jane` type, and its
+    count says nothing about that type over `Jane’i`. Every other key is
+    looked up lowercased, as it always was.
     """
     # The length check comes FIRST. _corpus_ranks() deserialises a 34 MB
     # model, and there is nothing to rank below two candidates, so putting
@@ -1806,13 +1834,17 @@ def _rank_paradigm_keys(keys: list[str]) -> tuple[list[str], bool]:
     ranks = _corpus_ranks()
     if not ranks:
         return (keys, False)
+    if pos == "H":
+        found = [ranks.get(k) if k != lemma else None for k in keys]
+    else:
+        found = [ranks.get(k.lower()) for k in keys]
     unattested = len(ranks) + 1
     order = sorted(
         range(len(keys)),
-        key=lambda i: (ranks.get(keys[i], unattested), i),
+        key=lambda i: (unattested if found[i] is None else found[i], i),
     )
     ordered = [keys[i] for i in order]
-    used = any(k in ranks for k in keys)
+    used = any(r is not None for r in found)
     return (ordered, used)
 
 
@@ -1828,7 +1860,7 @@ def _paradigm_hints(lemma: str, pos: str, key_form: str) -> tuple[list[str], boo
     number measures this code and not a re-implementation of it.
     """
     keys = _synthesize(lemma, key_form, pos)
-    ranked, used = _rank_paradigm_keys(keys)
+    ranked, used = _rank_paradigm_keys(keys, pos, lemma)
     if len(ranked) < 2:
         return ([""], False)
     return (ranked, used)
@@ -1911,6 +1943,16 @@ def _rank_surfaces(surfaces: list[str], stem: str) -> list[str]:
     return sorted(surfaces, key=lambda w: not w.startswith(stem))
 
 
+def _table_surfaces(forms: list[dict]) -> set[str]:
+    """Every surface in one paradigm table, a slot's variants included."""
+    return {s for e in forms
+            for s in ([e["surface"]] if isinstance(e["surface"], str) else e["surface"])}
+
+
+# The ASCII apostrophe and the modifier letter, as Vabamorf's U+2019.
+_APOSTROPHES = str.maketrans("'\u02bc", "\u2019\u2019")
+
+
 def _build_forms(lemma: str, pos: str, form_list, labels: dict, hint: str) -> list[dict]:
     """One paradigm table, generated under a single paradigm hint."""
     # The stems this table's own oblique forms are built on, generated
@@ -1966,6 +2008,30 @@ def _paradigm(word: str) -> dict:
     lemma = primary["lemma"]
     pos = primary["partofspeech"]
     reading_et = ""
+
+    if pos == "H" and not _name_inflects(lemma):
+        # The disambiguator can put a guessed lemma ahead of the lexicon's
+        # own: Lõuna-Eesti as `Lõuna-Eest`, Ida-Euroopa as `Ida-Euroobas`,
+        # Kesk-Euroopat as a nominative `Kesk-Euroopat`. The lexicon's own
+        # name for the word wins, one the disambiguator also kept first.
+        names = _lexicon_names(word)
+        if names:
+            kept = {a["lemma"] for a in analyses[0]["analysis"]}
+            lemma = next((n for n in names if n in kept), names[0])
+    elif (pos in _NOMINAL_POS and word.islower() and not _lexicon_readings(word)
+          and _lexicon_names(word[:1].upper() + word[1:])):
+        # A name typed in lowercase (peeter, tartusse). The guesser would
+        # make a common noun of it, `peeter : peeteri`, `tartuss : tartussi`.
+        return {
+            "lemma": None,
+            "partofspeech": None,
+            "forms": [],
+            "paradigm_count": 0,
+            "summary_estonian": (
+                f"Vabamorf ei tunne sõna '{word}'. Kui see on pärisnimi, anna "
+                f"sisendiks '{word[:1].upper() + word[1:]}'."
+            ),
+        }
 
     if pos not in _NOMINAL_POS and pos != "V":
         # The isolated-word reading does not inflect. Before claiming the
@@ -2032,20 +2098,27 @@ def _paradigm(word: str) -> dict:
         # contains it would have answered `paradigm("kotti")` with `kota`
         # whenever corpus ranking was unavailable, while claiming the input
         # had decided. A form in more than one table is left to the ranking.
-        w = word.lower()
-        if w != lemma.lower():
+        #
+        # Vabamorf writes a name's apostrophe as U+2019 (Margot’d) and reads
+        # the ASCII one as the same, so both are compared as one character.
+        w = word.lower().translate(_APOSTROPHES)
+        if w != lemma.lower().translate(_APOSTROPHES):
             matched = [
                 i for i, (_key, forms) in enumerate(tables)
-                if w in {
-                    s.lower()
-                    for entry in forms
-                    for s in ([entry["surface"]] if isinstance(entry["surface"], str)
-                              else entry["surface"])
-                }
+                if w in {s.lower().translate(_APOSTROPHES) for s in _table_surfaces(forms)}
             ]
             if len(matched) == 1:
                 tables.insert(0, tables.pop(matched[0]))
                 chosen_by_input = True
+
+    # The lexicon lists some names only as an indeclinable part of a longer
+    # one (form `?`: New, San, Rio, also Franz and Charlotte), and gives the
+    # lemma for every slot. Names inflect, so that table is no answer:
+    # `Charlottega` would come back as "Charlotte ei muutu".
+    name_part = (pos == "H" and len(tables) == 1 and bool(tables[0][1])
+                 and _table_surfaces(tables[0][1]) == {lemma})
+    if name_part:
+        tables = [("", [])]
 
     key, forms = tables[0]
     # Every table is built from the same `labels`, so a code the first
@@ -2070,8 +2143,14 @@ def _paradigm(word: str) -> dict:
     if not forms and pos == "H":
         # A name the lexicon lacks (Google, Kask), or a capitalised common
         # word Vabamorf took for one (a sentence-initial Raamat). Names
-        # inflect, so "0 vormi" alone would read as "does not inflect".
-        summary = f"Vabamorf ei tunne pärisnime '{lemma}' ega oska seda käänata."
+        # inflect, so "0 vormi" alone would read as "does not inflect". The
+        # input is named, not the lemma: an unknown name's lemma is a guess.
+        if name_part:
+            summary = (f"Vabamorf tunneb sõna '{lemma}' ainult mitmesõnalise nime "
+                       f"muutumatu osana (nagu New nimes New York) ega oska seda "
+                       f"eraldi käänata.")
+        else:
+            summary = f"Vabamorf ei tunne sõna '{word}' pärisnimena ega oska seda käänata."
         try:
             allr = vm.analyze([word], disambiguate=False)[0].get("analysis") or []
         except Exception:
@@ -2110,12 +2189,7 @@ def _paradigm(word: str) -> dict:
             f"Sõnal '{lemma}' on Vabamorfi sõnastikus {len(tables)} eri muuttüüpi "
             f"({all_keys}). {why} Ülejäänud tüübid on väljal 'other_paradigms'.{hint_et}"
         )
-    surfaces = {
-        s for entry in forms
-        for s in ([entry["surface"]] if isinstance(entry["surface"], str)
-                  else entry["surface"])
-    }
-    if forms and surfaces == {lemma}:
+    if forms and _table_surfaces(forms) == {lemma}:
         result["invariant"] = True
         result["invariant_estonian"] = f"Sõna '{lemma}' ei muutu, kõik vormid on ühesugused."
     return result

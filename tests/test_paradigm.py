@@ -860,7 +860,7 @@ def every_return_path_carries_paradigm_count() -> None:
     case that keeps `summary_estonian` tied to the forms, not the path."""
     print("paradigm_count is on every return path")
     for word in ("ja", "väga", "qwertyuiopasdf", "kott", "kasutama", "esimene", "ei",
-                 "Tallinn", "Google"):
+                 "Tallinn", "Google", "Franz", "Lõuna-Eesti", "peeter"):
         r = server._paradigm(word)
         check(f"{word} has paradigm_count", "paradigm_count" in r, str(sorted(r)))
         check(f"{word} echoes neither input nor a static note",
@@ -1227,16 +1227,44 @@ def names_are_ranked_by_their_own_spelling() -> None:
         print("  SKIP  no fastText model installed, ranking assertions not run")
         skipped.append("names_are_ranked_by_their_own_spelling")
         return
-    order, used = server._rank_paradigm_keys(["Yorki", "Yorgi"])
+    order, used = server._rank_paradigm_keys(["Yorki", "Yorgi"], "H", "York")
     check("Yorgi outranks Yorki on the capitalised counts",
           order == ["Yorgi", "Yorki"] and used is True, f"{order} used={used}")
     r = server._paradigm("York")
     check("York says the ranking used corpus data",
           r.get("paradigm_key") == "Yorgi" and r.get("ranked_by_corpus_frequency") is True,
           f"key={r.get('paradigm_key')} ranked={r.get('ranked_by_corpus_frequency')}")
+    r = server._paradigm("Toomas")
+    check("Toomas leads with the attested Tooma",
+          r.get("paradigm_key") == "Tooma" and r.get("ranked_by_corpus_frequency") is True,
+          f"key={r.get('paradigm_key')} ranked={r.get('ranked_by_corpus_frequency')}")
     order, used = server._rank_paradigm_keys(["kota", "koti"])
     check("a common noun ranks as before", order == ["koti", "kota"] and used is True,
           f"{order} used={used}")
+
+    print("a name's own nominative is no evidence for the type it spells")
+    # `Jane` is the nominative and also the key of the Jane : Jane type;
+    # its count (rank 7274) is the nominative's, so it decides nothing.
+    check("the premise: the nominative Jane is attested", "Jane" in server._corpus_ranks())
+    order, used = server._rank_paradigm_keys(["Jane", "Jane’i"], "H", "Jane")
+    check("Jane's ranking claims no corpus evidence", used is False, f"{order} used={used}")
+    r = server._paradigm("Jane")
+    check("and the result says the order is Vabamorf's",
+          r.get("ranked_by_corpus_frequency") is False
+          and "sagedusandmeid ei olnud" in (r.get("ambiguity_estonian") or ""),
+          str(r.get("ambiguity_estonian")))
+
+    print("a common noun with capitals is looked up lowercased, as before")
+    # Looked up as spelled, `GPS-seade` (the nominative, rank 65510) was
+    # taken for evidence of the GPS-seade : GPS-seade type, and the result
+    # claimed corpus data for a genitive the corpus never shows.
+    for word in ("GPS-seade", "MM-sari", "Blu-ray"):
+        r = server._paradigm(word)
+        check(f"{word} claims no corpus evidence", r.get("ranked_by_corpus_frequency") is False
+              and "sagedusandmeid ei olnud" in (r.get("ambiguity_estonian") or ""),
+              f"key={r.get('paradigm_key')} {r.get('ambiguity_estonian')}")
+    order, used = server._rank_paradigm_keys(["GPS-seade", "GPS-seadme"], "S", "GPS-seade")
+    check("an S key is not looked up as spelled", used is False, f"{order} used={used}")
 
 
 def unknown_names_get_no_invented_forms() -> None:
@@ -1252,9 +1280,14 @@ def unknown_names_get_no_invented_forms() -> None:
         check(f"{word}: no forms", r.get("forms") == [],
               str([(e["form"], e["surface"]) for e in r.get("forms", [])][:3]))
         check(f"{word}: the summary says the name is unknown, not that it does not inflect",
-              "ei tunne pärisnime" in (r.get("summary_estonian") or "")
+              f"ei tunne sõna '{word}' pärisnimena" in (r.get("summary_estonian") or "")
               and "ei käändu" not in (r.get("summary_estonian") or ""),
               str(r.get("summary_estonian")))
+    # An unknown name's lemma is the guesser's, so the summary names the
+    # input instead: it printed `Ida-Euroobas` for Ida-Euroopa.
+    r = server._paradigm("Googlesse")
+    check("the summary names the input, not a guessed lemma",
+          "'Googlesse'" in (r.get("summary_estonian") or ""), str(r.get("summary_estonian")))
     print("and a capitalised common word is pointed at its lowercase form")
     for word, lower, gen in (("Raamat", "raamat", "raamatu"), ("Teatris", "teatris", "teatri"),
                              ("Kask", "kask", "kase")):
@@ -1291,6 +1324,109 @@ def lowercase_place_names_keep_their_own_reading() -> None:
               f"pos={r.get('partofspeech')} forms={len(r.get('forms', []))}")
 
 
+def a_name_the_lexicon_knows_is_found_behind_a_guess() -> None:
+    """The disambiguator can keep a guessed lemma ahead of the lexicon's own:
+    Lõuna-Eesti came back as `Lõuna-Eest`, Ida-Euroopa as `Ida-Euroobas`,
+    Kesk-Euroopat as a nominative `Kesk-Euroopat`, and each was reported as
+    a name Vabamorf does not know."""
+    print("a hyphenated name gets the lexicon's lemma, not the guess")
+    # (input, lemma, sg p, sg in)
+    for word, lemma, part, ine in (
+        ("Lõuna-Eesti", "Lõuna-Eesti", "Lõuna-Eestit", "Lõuna-Eestis"),
+        ("Põhja-Eesti", "Põhja-Eesti", "Põhja-Eestit", "Põhja-Eestis"),
+        ("Kirde-Eesti", "Kirde-Eesti", "Kirde-Eestit", "Kirde-Eestis"),
+        ("Ida-Euroopa", "Ida-Euroopa", "Ida-Euroopat", "Ida-Euroopas"),
+        ("Kesk-Euroopa", "Kesk-Euroopa", "Kesk-Euroopat", "Kesk-Euroopas"),
+        ("Eesti-Läti", "Eesti-Läti", "Eesti-Lätit", "Eesti-Lätis"),
+        ("Lõuna-Eestisse", "Lõuna-Eesti", "Lõuna-Eestit", "Lõuna-Eestis"),
+        ("Kesk-Euroopat", "Kesk-Euroopa", "Kesk-Euroopat", "Kesk-Euroopas"),
+        ("Lõuna-Koreas", "Lõuna-Korea", "Lõuna-Koread", "Lõuna-Koreas"),
+        # Already right before, and must stay so.
+        ("Lääne-Eesti", "Lääne-Eesti", "Lääne-Eestit", "Lääne-Eestis"),
+        ("Põhja-Euroopa", "Põhja-Euroopa", "Põhja-Euroopat", "Põhja-Euroopas"),
+    ):
+        r = server._paradigm(word)
+        check(f"{word} -> {lemma}", r.get("lemma") == lemma and r.get("partofspeech") == "H",
+              f"lemma={r.get('lemma')} summary={r.get('summary_estonian')}")
+        check(f"{word} sg p = {part}, sg in = {ine}",
+              form_of(r, "sg p") == [part] and form_of(r, "sg in") == [ine],
+              f"{form_of(r, 'sg p')} {form_of(r, 'sg in')}")
+    print("and a name the lexicon does not have still gets nothing")
+    for word in ("Kask", "Google", "Teatris", "Chile", "Marja", "Lõuna-Xyzisse"):
+        r = server._paradigm(word)
+        check(f"{word}: no forms", r.get("forms") == [],
+              f"lemma={r.get('lemma')} {[(e['form'], e['surface']) for e in r['forms']][:2]}")
+
+
+def a_name_part_is_not_called_invariant() -> None:
+    """The lexicon lists some names only as an indeclinable part of a longer
+    one (form `?`): New, San, Rio, but also Franz and Charlotte. Synthesis
+    then returns the lemma in every slot, and the tool said "Sõna
+    'Charlotte' ei muutu", even for the caller's own `Charlottega`."""
+    print("a name the lexicon has only as a name part is not said to be invariant")
+    for word, lemma in (("Charlotte", "Charlotte"), ("Charlottega", "Charlotte"),
+                        ("Charlotte’i", "Charlotte"), ("Franz", "Franz"), ("New", "New"),
+                        ("San", "San")):
+        r = server._paradigm(word)
+        summary = r.get("summary_estonian") or ""
+        check(f"{word}: no table of identical forms", r.get("forms") == [],
+              f"{len(r.get('forms', []))} forms")
+        check(f"{word}: not marked invariant", "invariant" not in r, str(r.get("invariant_estonian")))
+        check(f"{word}: the summary says what the lexicon has",
+              r.get("lemma") == lemma and "ainult mitmesõnalise nime muutumatu osana" in summary
+              and "ei muutu" not in summary, summary)
+    print("a word that really does not change still says so")
+    for word in ("väärt", "eri"):
+        check(f"{word} is still invariant", server._paradigm(word).get("invariant") is True)
+
+
+def an_ascii_apostrophe_selects_its_type() -> None:
+    """Vabamorf generates a name's apostrophe as U+2019 (Margot’d) and reads
+    the ASCII one as the same character. The input match compared the raw
+    input, so `Margot'd`, as keyboards type it, matched no table: the
+    Margoti type led and the caller was told to pass an inflected form."""
+    print("an inflected name with an ASCII apostrophe selects its type")
+    for word in ("Margot'd", "Margot'", "Margot’d", "Margot’"):
+        r = server._paradigm(word)
+        check(f"{word} -> the Margot’ type", r.get("paradigm_key") == "Margot’"
+              and form_of(r, "sg p") == ["Margot’d"],
+              f"key={r.get('paradigm_key')} sg p={form_of(r, 'sg p')}")
+        check(f"{word}: the input decided", f"sinu antud vorm '{word}'"
+              in (r.get("ambiguity_estonian") or ""), str(r.get("ambiguity_estonian")))
+    r = server._paradigm("Margoti")
+    check("Margoti still selects the Margoti type", r.get("paradigm_key") == "Margoti",
+          str(r.get("paradigm_key")))
+
+
+def a_lowercase_name_is_pointed_at_the_name() -> None:
+    """A name typed in lowercase is a word the lexicon does not know, and
+    the guesser made a common noun of it: `peeter : peeteri`, `priit :
+    priidi`, `tartusse` as a plural partitive of `tartuss`. The name is
+    Peeter : Peetri, Priit : Priidu."""
+    print("a lowercase name gets no guessed forms, and is pointed at the name")
+    for word, name, gen in (("peeter", "Peeter", "Peetri"), ("priit", "Priit", "Priidu"),
+                            ("indrek", "Indrek", "Indreku"), ("lennart", "Lennart", "Lennarti"),
+                            ("tartusse", "Tartusse", "Tartu"), ("tallinn", "Tallinn", "Tallinna")):
+        r = server._paradigm(word)
+        check(f"{word}: no forms and no guessed lemma",
+              r.get("forms") == [] and r.get("lemma") is None,
+              f"lemma={r.get('lemma')} {[(e['form'], e['surface']) for e in r['forms']][:2]}")
+        check(f"{word}: points at '{name}'",
+              f"anna sisendiks '{name}'" in (r.get("summary_estonian") or ""),
+              str(r.get("summary_estonian")))
+        check(f"and '{name}' has the name's table, sg g {gen}",
+              form_of(server._paradigm(name), "sg g") == [gen],
+              str(form_of(server._paradigm(name), "sg g")))
+    print("a lowercase word the lexicon knows keeps its own reading")
+    for word, gen in (("mari", "marja"), ("kask", "kase"), ("linnamäe", "linnamäe"),
+                      ("jõhvi", "jõhvi")):
+        r = server._paradigm(word)
+        check(f"{word} keeps its table", gen in form_of(r, "sg g"),
+              f"lemma={r.get('lemma')} sg g={form_of(r, 'sg g')}")
+    check("an unknown word that is no name keeps its guessed table",
+          server._paradigm("qwertyxyz").get("forms") != [])
+
+
 ordinals_comparatives_superlatives_inflect()
 no_form_is_invented_for_a_word_that_lacks_it()
 verb_free_variants_are_not_two_inflection_types()
@@ -1324,6 +1460,10 @@ proper_nouns_inflect()
 names_are_ranked_by_their_own_spelling()
 unknown_names_get_no_invented_forms()
 lowercase_place_names_keep_their_own_reading()
+a_name_the_lexicon_knows_is_found_behind_a_guess()
+a_name_part_is_not_called_invariant()
+an_ascii_apostrophe_selects_its_type()
+a_lowercase_name_is_pointed_at_the_name()
 
 if failures:
     print(f"\n{len(failures)} failure(s):")
