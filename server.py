@@ -2814,44 +2814,250 @@ def check_hyphenation(word: Annotated[str, Field(description="One Estonian word,
     return _check_hyphenation(word)
 
 
+# check_numbers reads the words around a period decimal before calling it
+# English. Rule 1 beats the rest; any of rules 2 to 6 skips the number.
+# 1. A unit, currency or per cent beside the number flags it, whatever else
+#    holds (2.5%, 12.5 km, 0.75 liitrit, 3.7 miljonit, 1500.50 eurot,
+#    €3.50, lisa 1.5 liitrit). A range shares the unit after it
+#    (1.25-1.50 eurot).
+# 2. A time is skipped: a form of kell, or kl, up to two words before it
+#    (kell 10.30, kell on 9.15); a quarter hour 1-24 (10.30, 9.15, 17.00);
+#    both ends of a clock range joined by a hyphen or an en dash
+#    (10.30-12.00).
+# 3. A section, clause, room or version number is skipped: the word before
+#    is a form of punkt, lõige, peatükk, jaotis, tabel, joonis, lisa, osa,
+#    paragrahv, artikkel, ruum or versioon, or is p, lg, ptk, nr, art, ver,
+#    v or §; one of those nouns follows (3.2 lõikes, 3.2 punktis), though
+#    not punkt in other forms, which a score takes (3.5 punkti, 3.5
+#    punktini); or the number opens a line and a capitalised word follows
+#    (3.2 Tulemused).
+# 4. A version after a name is skipped: the word before has a capital
+#    inside (iOS), is capitalised mid-sentence (Python 3.12), or opens the
+#    sentence and Vabamorf knows it only as a name or not at all. A number
+#    glued to a letter (v1.2) is never a candidate.
+# 5. A date is skipped: day 1-31 and month 01-12 in two digits (14.05,
+#    1.05), or a month 1-9 before a period (1.5.). Three or more groups
+#    (14.05.2026, 3.12.1, an IP address) are never candidates.
+# 6. A number joined to a skipped one by a comma, ja, või, ning, kuni or a
+#    dash is skipped too (punktid 3.2 ja 3.4, § 3.2-3.5).
+# Everything else is flagged, at a sentence end too (Pi on 3.14.). A comma
+# number is flagged only when it cannot be an Estonian decimal: two or more
+# groups (1,500,000) or a group before a period decimal (1,500.50). One
+# group (1,250 kg, 3,142) is a decimal.
+_NUM_DECIMAL_RE = re.compile(r"(?<![\w.])(?<!\d,)(\d+)\.(\d+)(?!\d)(?!\.\d)")
+_NUM_THOUSANDS_RE = re.compile(r"(?<![\w.,])(\d{1,3}(?:,\d{3})+)(?:\.(\d+))?(?!\d)(?!,\d)")
+_NUM_RANGE_GAP_RE = re.compile(r"[^\S\n]*[-\u2013][^\S\n]*")
+_NUM_RANGE_TAIL_RE = re.compile(r"[^\S\n]*[-\u2013][^\S\n]*\d+(?:[.,]\d+)?")
+_NUM_JOIN_RE = re.compile(r"(?:-[^\W\d_]{1,4})?[^\S\n]*(?:,|;|[-\u2013]|ja|või|ning|kuni)?[^\S\n]*")
+_NUM_NEXT_RE = re.compile(r"\s*(?:([%‰€$£°])|([^\W\d_]+))")
+_NUM_OPENERS = "([{«\"„“'"
+_NUM_LEAD_SKIP = " \t\u00a0\u202f" + _NUM_OPENERS + "-•*\u2013"
+_NUM_CURRENCY = frozenset({"€", "$", "£", "eur", "usd", "gbp"})
+_NUM_UNIT_ABBR = frozenset({
+    "km", "m", "cm", "mm", "m²", "m³", "km²", "kg", "g", "mg", "l", "ml",
+    "dl", "cl", "ha", "h", "min", "kw", "kwh", "mw", "mwh", "kb", "mb",
+    "gb", "tb", "tk", "mln", "mld", "mrd", "tuh",
+}) | _NUM_CURRENCY
+_NUM_UNIT_LEMMAS = frozenset({
+    "euro", "sent", "dollar", "kroon", "protsent", "protsendipunkt",
+    "promill", "tuhat", "miljon", "miljard", "triljon", "kilo", "gramm",
+    "kilogramm", "milligramm", "tonn", "meeter", "kilomeeter", "sentimeeter",
+    "millimeeter", "ruutmeeter", "kuupmeeter", "hektar", "liiter",
+    "milliliiter", "detsiliiter", "kraad", "tund", "minut", "sekund", "aasta",
+    "vatt", "kilovatt", "megavatt", "kilobait", "megabait", "gigabait",
+    "terabait",
+})
+_NUM_SECTION_LEMMAS = frozenset({
+    "punkt", "alapunkt", "lõige", "peatükk", "alapeatükk", "jaotis",
+    "alajaotis", "tabel", "joonis", "lisa", "osa", "paragrahv", "artikkel",
+    "ruum", "versioon",
+})
+# After a number, punkt is more often a score (3.5 punkti) than a clause.
+_NUM_POINT_LEMMAS = frozenset({"punkt", "alapunkt"})
+_NUM_POINT_AFTER = frozenset({
+    "punktis", "punktist", "punktides", "punktidest", "alapunktis", "alapunktist",
+})
+_NUM_SECTION_ABBR = frozenset({"p", "lg", "ptk", "nr", "art", "ver", "v"})
+_NUM_TIME_LEMMAS = frozenset({"kell", "kellaaeg"})
+
+
+@lru_cache(maxsize=4096)
+def _number_word_readings(word: str) -> tuple[tuple[str, str], ...]:
+    """Vabamorf's (lemma, POS) readings of one word, without guessing, so an
+    unknown word has none. Lemmas are lowercased, compound marks dropped."""
+    try:
+        analysed = _vabamorf().analyze(
+            words=[word], guess=False, propername=False, disambiguate=False)
+    except Exception:
+        return ()
+    return tuple(
+        (a["lemma"].replace("_", "").replace("=", "").lower(), a.get("partofspeech") or "")
+        for w in analysed for a in w["analysis"] if a.get("lemma")
+    )
+
+
+def _number_lemmas(word: str) -> set[str]:
+    return {lemma for lemma, _ in _number_word_readings(word)}
+
+
+def _opens_sentence(text: str, pos: int, *, line_only: bool = False) -> bool:
+    """True when only spaces, opening quotes or a bullet stand between `pos`
+    and the start of the text, a line or (unless `line_only`) a sentence."""
+    i = pos - 1
+    while i >= 0 and text[i] in _NUM_LEAD_SKIP:
+        i -= 1
+    return i < 0 or text[i] in ("\n\r" if line_only else ".!?…\n\r")
+
+
+def _is_name_before_number(word: str, text: str, start: int) -> bool:
+    """Python 3.12, iOS 17.2: a name or product, not a common word."""
+    if any(c.isupper() for c in word[1:]):
+        return True
+    if not word[:1].isupper():
+        return False
+    if not _opens_sentence(text, start):
+        return True
+    return all(pos == "H" for _, pos in _number_word_readings(word))
+
+
+def _number_cue_before(text: str, start: int) -> str | None:
+    """`unit`, `time`, `section`, `name` or None, from the words before a
+    candidate decimal at `start`."""
+    window_start = max(0, start - 120)
+    toks = list(re.finditer(r"\S+", text[window_start:start]))
+    if toks and toks[-1].end() + window_start == start:
+        # Glued on: €3.50, §3.2, the 17.00 of 9.15-17.00.
+        core = toks[-1].group().lstrip(_NUM_OPENERS)
+        if core:
+            if core.lower() in _NUM_CURRENCY or core[-1] in "€$£":
+                return "unit"
+            return "section" if core.endswith("§") else None
+        toks.pop()
+    if not toks:
+        return None
+    prev = toks[-1].group().lstrip(_NUM_OPENERS)
+    label = prev.endswith(":")  # Versioon: 2.4 is a section, Pi: 3.14 no name
+    prev = prev[:-1] if label else prev
+    if not prev:
+        return None
+    if prev.endswith("."):
+        abbr = prev[:-1].lower()
+        if abbr == "kl":
+            return "time"
+        return "section" if abbr in _NUM_SECTION_ABBR else None
+    low = prev.lower()
+    if low in _NUM_CURRENCY:
+        return "unit"
+    if "§" in prev or low in _NUM_SECTION_ABBR:
+        return "section"
+    if not prev.isalpha():
+        return None
+    # kell on 10.30, kella umbes 9.15: up to two plain words between.
+    for k in range(1, min(3, len(toks)) + 1):
+        word = prev if k == 1 else toks[-k].group().lstrip(_NUM_OPENERS)
+        if not word.isalpha():
+            break
+        if word.lower() == "kl" or _number_lemmas(word) & _NUM_TIME_LEMMAS:
+            return "time"
+    if _number_lemmas(prev) & _NUM_SECTION_LEMMAS:
+        return "section"
+    if not label and _is_name_before_number(prev, text, window_start + toks[-1].start()):
+        return "name"
+    return None
+
+
+def _number_cue_after(text: str, start: int, end: int) -> str | None:
+    """`unit`, `section`, `heading` or None, from what follows a candidate
+    decimal spanning `start`-`end`."""
+    pos = end
+    tail = _NUM_RANGE_TAIL_RE.match(text, pos)
+    if tail:
+        pos = tail.end()
+    m = _NUM_NEXT_RE.match(text, pos, min(len(text), pos + 60))
+    if not m:
+        return None
+    if m.group(1):
+        return "unit"
+    word = m.group(2)
+    if word.lower() in _NUM_UNIT_ABBR:
+        return "unit"
+    lemmas = _number_lemmas(word)
+    if lemmas & _NUM_UNIT_LEMMAS:
+        return "unit"
+    if word.lower() in _NUM_POINT_AFTER or lemmas & (_NUM_SECTION_LEMMAS - _NUM_POINT_LEMMAS):
+        return "section"
+    if word[0].isupper() and _opens_sentence(text, start, line_only=True):
+        return "heading"
+    return None
+
+
+def _is_clock(whole: str, frac: str) -> bool:
+    return len(frac) == 2 and len(whole) <= 2 and int(whole) <= 24 and int(frac) <= 59
+
+
+def _number_skip_reason(text: str, cands: list, i: int, skipped: list[bool]) -> str | None:
+    """Why candidate `i` is not an English decimal, or None to flag it."""
+    m = cands[i]
+    whole, frac = m.group(1), m.group(2)
+    before = _number_cue_before(text, m.start())
+    after = _number_cue_after(text, m.start(), m.end())
+    if "unit" in (before, after):
+        return None
+    if before or after:
+        return before or after
+    h = int(whole) if len(whole) <= 2 else 99
+    if frac in ("00", "15", "30", "45") and 1 <= h <= 24:
+        return "time"
+    if _is_clock(whole, frac):
+        for j in (i - 1, i + 1):
+            if 0 <= j < len(cands):
+                a, b = sorted((cands[i], cands[j]), key=lambda c: c.start())
+                if (_NUM_RANGE_GAP_RE.fullmatch(text, a.end(), b.start())
+                        and _is_clock(cands[j].group(1), cands[j].group(2))):
+                    return "time"
+    if 1 <= h <= 31 and (
+        (len(frac) == 2 and 1 <= int(frac) <= 12)
+        or (len(frac) == 1 and frac != "0" and text[m.end():m.end() + 1] == ".")
+    ):
+        return "date"
+    if i > 0 and skipped[i - 1] and _NUM_JOIN_RE.fullmatch(text, cands[i - 1].end(), m.start()):
+        return "list"
+    return None
+
+
 def _check_numbers(text: str) -> dict:
-    """Phase-1 number-writing checker: separator rules only."""
+    """Number-writing checker: separator rules only."""
     _check_text(text)
-    import re
     issues: list[dict] = []
 
-    # Decimal with period instead of Estonian comma. Skip patterns that
-    # look like dates (\d+\.\d+\.\d+) or version numbers / IPs by
-    # excluding matches whose tail is followed by another period+digit.
-    for m in re.finditer(r"(?<![\d.])(\d+)\.(\d+)(?![\d.])", text):
-        # if followed by ".\d+" (date-like), skip
-        rest = text[m.end():]
-        if rest.startswith(".") and len(rest) > 1 and rest[1].isdigit():
+    # Thousands: only where the comma cannot be the Estonian decimal comma.
+    for m in _NUM_THOUSANDS_RE.finditer(text):
+        groups, decimals = m.group(1), m.group(2)
+        if groups.count(",") < 2 and decimals is None:
             continue
-        original = m.group(0)
-        corrected = f"{m.group(1)},{m.group(2)}"
         issues.append({
-            "text": original,
-            "position": m.start(),
-            "rule": "decimal-separator",
-            "rule_estonian": "kümnenduskoma",
-            "suggestion": corrected,
-        })
-
-    # Thousands separator using comma where Estonian uses a space.
-    # Matches \d{1,3}(,\d{3})+ where the grouping is exactly 3-digit
-    # blocks (real thousand separator), not a decimal like 3,14.
-    for m in re.finditer(r"(?<!\d)\d{1,3}(?:,\d{3})+(?!\d)", text):
-        original = m.group(0)
-        corrected = original.replace(",", " ")
-        issues.append({
-            "text": original,
+            "text": m.group(0),
             "position": m.start(),
             "rule": "thousands-separator",
             "rule_estonian": "tuhandeliste eraldaja",
-            "suggestion": corrected,
+            "suggestion": groups.replace(",", " ") + (f",{decimals}" if decimals else ""),
         })
 
+    cands = list(_NUM_DECIMAL_RE.finditer(text))
+    skipped: list[bool] = []
+    for i, m in enumerate(cands):
+        skipped.append(_number_skip_reason(text, cands, i, skipped) is not None)
+        if skipped[-1]:
+            continue
+        issues.append({
+            "text": m.group(0),
+            "position": m.start(),
+            "rule": "decimal-separator",
+            "rule_estonian": "kümnenduskoma",
+            "suggestion": f"{m.group(1)},{m.group(2)}",
+        })
+
+    issues.sort(key=lambda d: d["position"])
     return {
         "issues": issues,
         "summary_estonian": (
@@ -2870,13 +3076,12 @@ def _check_numbers(text: str) -> dict:
 @_counted
 def check_numbers(text: Annotated[str, Field(description="Estonian text.")]) -> _CheckResult:
     """Flags English-style number separators (numbrite õigekirjutus):
-    - `decimal-separator`: 3.14 → 3,14.
+    - `decimal-separator`: 3.14 → 3,14; times, dates, section and version
+      numbers are skipped (kell 10.30, 14.05, punkt 3.2, Python 3.12).
     - `thousands-separator`: 1,500,000 → 1 500 000 (ideally non-breaking
       spaces; `suggestion` has plain ones).
 
-    No context is read: times, dates and section numbers (10.30, 14.05,
-    3.2) and three-place decimals (1,250 kg) can be flagged too. Spelling
-    out small numbers is not checked.
+    Spelling out small numbers is not checked.
     """
     return _check_numbers(text)
 
