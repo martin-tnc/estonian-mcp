@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -140,6 +141,104 @@ def defined_terms_tests() -> None:
         check("over MAX_DOC_CHARS raises", True)
 
 
+def defined_terms_quote_tests() -> None:
+    print("check_defined_terms quote styles")
+    # Estonian typography closes „ with “ (U+201C); that pairing used to
+    # define nothing. Every pairing defines the same term, counted alike.
+    styles = {
+        "«»": ("«", "»"),
+        "„“": ("„", "“"),
+        "„”": ("„", "”"),
+        '""': ('"', '"'),
+        "“”": ("“", "”"),
+    }
+    for label, (o, c) in styles.items():
+        r = server.check_defined_terms(
+            f"Käesolev leping (edaspidi {o}Leping{c}) jõustub. Leping lõpeb 2027.")
+        check(f"{label} defines Leping, used twice, no issues",
+              r["defined_terms"] == [{"term": "Leping", "position": 17,
+                                      "definitions": 1, "total_occurrences": 2}]
+              and r["issues"] == [], str(r))
+
+    # A „“ contract maps exactly like the same contract written with «».
+    base = ('Käesoleva lepingu (edaspidi «Leping») pooled on AS Müük '
+            '(edaspidi «Müüja») ja OÜ Ostja (edaspidi ühiselt «Pooled»). '
+            'Müüja annab kauba üle. Leping jõustub. Kokkulepe (edaspidi '
+            '«Kokkulepe») ja (edaspidi «Müüja»).')
+    low = base.replace("«", "„").replace("»", "“")
+    check("„“ document maps exactly like the «» one",
+          server.check_defined_terms(low) == server.check_defined_terms(base),
+          str(server.check_defined_terms(low)))
+
+    # Two terms in one sentence, each in its own style, neither swallows
+    # the other's closing quote.
+    mixed = server.check_defined_terms(
+        'AS Müük (edaspidi „Müüja“) ja OÜ Ost (edaspidi «Ostja») ning Pank '
+        '(edaspidi “Pank”) sõlmivad lepingu. Müüja, Ostja ja Pank allkirjastavad.')
+    terms = [t["term"] for t in mixed["defined_terms"]]
+    check("mixed styles in one sentence define all three",
+          terms == ["Müüja", "Ostja", "Pank"], str(mixed["defined_terms"]))
+    check("no term holds a quote character",
+          not any(set(t) & set("«»„“”\"") for t in terms), str(terms))
+    check("mixed styles: every term used, no issues", mixed["issues"] == [], str(mixed["issues"]))
+
+    # A multi-word term.
+    sp = server.check_defined_terms(
+        "AS Teenus (edaspidi „Teenuse osutaja“) osutab teenust. Teenuse osutaja vastutab.")
+    check("„Teenuse osutaja“ is one term, used twice",
+          sp["defined_terms"] == [{"term": "Teenuse osutaja", "position": 11,
+                                   "definitions": 1, "total_occurrences": 2}]
+          and sp["issues"] == [], str(sp))
+
+    # A term defined in two quote styles is still one term, defined twice.
+    dup = server.check_defined_terms(
+        "Pool (edaspidi «Müüja») ja teine (edaspidi „Müüja“). Müüja tegutseb.")
+    dd = next((i for i in dup["issues"] if i["rule"] == "duplicate-definition"), {})
+    check("duplicate-definition across «» and „“",
+          dd.get("explanation") == "Mõiste «Müüja» on defineeritud 2 korda."
+          and dup["defined_terms"][0]["definitions"] == 2, str(dup))
+
+    # defined-but-unused fires for a „“ definition as for a «» one.
+    un = server.check_defined_terms("Käesolev kokkulepe (edaspidi „Kokkulepe“) jõustub täna.")
+    check("„Kokkulepe“ unused → defined-but-unused",
+          [i["rule"] for i in un["issues"]] == ["defined-but-unused"], str(un["issues"]))
+
+    # 'ühiselt' and 'nimetatud' work with „“, and the bare form still does.
+    pooled = server.check_defined_terms(
+        "Müüja ja Ostja (edaspidi ühiselt nimetatud „Pooled“) lepivad kokku. Pooled kinnitavad.")
+    check("edaspidi ühiselt nimetatud „Pooled“",
+          [t["term"] for t in pooled["defined_terms"]] == ["Pooled"], str(pooled["defined_terms"]))
+    bare = server.check_defined_terms("Käesolev leping (edaspidi nimetatud Leping) jõustub. Leping lõpeb.")
+    check("bare 'edaspidi nimetatud Leping' still defines Leping",
+          [t["term"] for t in bare["defined_terms"]] == ["Leping"], str(bare["defined_terms"]))
+    # A missing space before the quote is still a definition.
+    glued = server.check_defined_terms('Leping (edaspidi"Leping") jõustub. Leping lõpeb.')
+    check('edaspidi"Leping" without a space still defines Leping',
+          [t["term"] for t in glued["defined_terms"]] == ["Leping"], str(glued["defined_terms"]))
+
+    # Estonian nests «» inside „“: the inner pair stays in the term.
+    nest = server.check_defined_terms(
+        "Programm (edaspidi „Programm «Kevad»“) algab. Programm «Kevad» lõpeb.")
+    check("„Programm «Kevad»“ keeps its inner quotes",
+          [(t["term"], t["total_occurrences"]) for t in nest["defined_terms"]]
+          == [("Programm «Kevad»", 2)], str(nest["defined_terms"]))
+
+    # 'edaspidi' closing a quotation is not a definition: “ and " close
+    # there, so what follows them up to the next quote is not a term.
+    for quoted in ('"Teen seda edaspidi", ütles ta. "Ei tee."',
+                   "„Maksan edaspidi“, ütles ta ja lisas “aitäh”.",
+                   "„Maksan edaspidi“, ütles ta. „Aitäh“, vastas teine."):
+        q = server.check_defined_terms(quoted)
+        check(f"no term from {quoted!r}", q["defined_terms"] == [] and q["issues"] == [], str(q))
+
+    # An unclosed quote before a long blank run used to backtrack
+    # quadratically (minutes at this size).
+    start = time.perf_counter()
+    server.check_defined_terms("Leping (edaspidi „Leping" + " " * 200_000)
+    elapsed = time.perf_counter() - start
+    check("unclosed quote before a long blank run stays linear", elapsed < 5, f"{elapsed:.1f} s")
+
+
 def is_legal_term_tests() -> None:
     print("_is_legal_term")
     check("solidaarvõlgnik is legal", server._is_legal_term("solidaarvõlgnik"))
@@ -195,6 +294,7 @@ def common_legal_usage_tests() -> None:
 
 legalese_tests()
 defined_terms_tests()
+defined_terms_quote_tests()
 is_legal_term_tests()
 common_legal_usage_tests()
 

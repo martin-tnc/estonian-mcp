@@ -3896,10 +3896,21 @@ def _check_legalese(text: str) -> dict:
     }
 
 
-# Definition markers: '(edaspidi «Müüja»)', '(edaspidi ühiselt "Pooled")',
-# '(edaspidi nimetatud Leping)'.
+# Definition markers: '(edaspidi „Müüja“)', '(edaspidi ühiselt «Pooled»)',
+# '(edaspidi "Ostja")', '(edaspidi nimetatud Leping)'. Quotes pair loosely:
+# «…», „…“, „…”, “…”, ”…”, "…" and mixes of them. The term holds no double
+# quote except a whole inner «…» ('„Programm «Kevad»“', the Estonian
+# nesting), so it ends at the first closing quote and never swallows one.
+# “, ” and " also close a quotation, so as openers they need a space
+# before them or the term right after them: '„Teen seda edaspidi“, ütles
+# ta ja lisas “aitäh”' defines nothing.
+_DEF_QUOTES = "«»„“”\""
 _EDASPIDI_QUOTED_RE = re.compile(
-    r"edaspidi(?:\s+ühiselt)?(?:\s+nimetatud)?\s*[«„\"“]\s*([^»\"”“]+?)\s*[»\"”]",
+    r"edaspidi(?:\s+ühiselt)?(?:\s+nimetatud)?"
+    r"(?:\s*[«„]|\s+[“”\"]|[“”\"](?=\w))"
+    # No \s* around the term: the caller strips it, and a \s* next to a
+    # lazy term makes an unclosed quote before a long blank run quadratic.
+    rf"((?:[^{_DEF_QUOTES}]|«[^{_DEF_QUOTES}]+»)+?)[»“”\"]",
     re.IGNORECASE,
 )
 _EDASPIDI_BARE_RE = re.compile(
@@ -3929,7 +3940,7 @@ def _check_defined_terms(text: str) -> dict:
     defs: dict[str, dict] = {}
     for rx in (_EDASPIDI_QUOTED_RE, _EDASPIDI_BARE_RE):
         for m in rx.finditer(text):
-            term = m.group(1).strip().strip("«»„“”\"' ")
+            term = m.group(1).strip().strip("' ")
             if not term:
                 continue
             d = defs.setdefault(term, {"position": m.start(), "definitions": 0})
