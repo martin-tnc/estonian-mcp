@@ -560,7 +560,7 @@ dependencies = [
 requires-dist = [
     { name = "compress-fasttext", specifier = ">=0.1.5" },
     { name = "estnltk", specifier = ">=1.7.3" },
-    { name = "mcp", extras = ["cli"], specifier = ">=1.2.0" },
+    { name = "mcp", extras = ["cli"], specifier = ">=1.28,<2" },
     { name = "scikit-learn", specifier = ">=1.0" },
 ]
 

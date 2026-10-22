@@ -26,6 +26,7 @@ import collections
 import difflib
 import hashlib
 import heapq
+import inspect
 import json
 import logging
 import os
@@ -38,9 +39,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, TypedDict
 
+import pydantic_core
 from mcp.server.fastmcp import FastMCP
-from mcp.types import ToolAnnotations
-from pydantic import Field, StringConstraints
+from mcp.server.fastmcp.exceptions import ToolError
+from mcp.types import TextContent, ToolAnnotations
+from mcp.types import Tool as MCPTool
+from pydantic import Field, StringConstraints, ValidationError
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -215,7 +219,111 @@ SERVER_INSTRUCTIONS = (
     "õ/ä/ö/ü/š/ž)."
 )
 
-mcp = FastMCP("estonian-mcp", instructions=SERVER_INSTRUCTIONS)
+# Keys whose value maps NAMES to subschemas. A property called "title" is
+# data, not the annotation, so these are walked name by name.
+_SCHEMA_NAME_MAPS = ("properties", "$defs", "definitions", "patternProperties")
+
+
+def _lean_schema(node: Any, *, output: bool) -> Any:
+    """Drop JSON Schema annotations that change no validation result: every
+    `title` (pydantic's "Text", "tokenizeArguments"), and in output schemas
+    `default: null` and `additionalProperties: true`, which restate the JSON
+    Schema defaults. Input defaults stay: they tell the model what leaving
+    an argument out means."""
+    if isinstance(node, list):
+        return [_lean_schema(x, output=output) for x in node]
+    if not isinstance(node, dict):
+        return node
+    out: dict[str, Any] = {}
+    for key, value in node.items():
+        if key == "title" and isinstance(value, str):
+            continue
+        if output and ((key == "default" and value is None)
+                       or (key == "additionalProperties" and value is True)):
+            continue
+        if key in _SCHEMA_NAME_MAPS and isinstance(value, dict):
+            out[key] = {name: _lean_schema(sub, output=output) for name, sub in value.items()}
+        else:
+            out[key] = _lean_schema(value, output=output)
+    return out
+
+
+_LIST_ITEM = re.compile(r"^(?:[-*•]|\d+[.)])\s")
+
+
+def _reflow(doc: str) -> str:
+    """A docstring as the client should get it: dedented (Python 3.13 does
+    that to __doc__, 3.10 to 3.12 do not), with each paragraph and list item
+    on one line. Hard wrapping at 72 columns costs about 5% more tokens and
+    tells the model nothing."""
+    paragraphs = []
+    for block in re.split(r"\n\s*\n", inspect.cleandoc(doc)):
+        lines: list[str] = []
+        for raw in block.splitlines():
+            line = raw.strip()
+            if lines and not _LIST_ITEM.match(line):
+                lines[-1] += " " + line
+            else:
+                lines.append(line)
+        paragraphs.append("\n".join(lines))
+    return "\n\n".join(paragraphs)
+
+
+class _EstonianMCP(FastMCP):
+    """FastMCP with a leaner wire format. Tools and validation are unchanged.
+
+    Every caller pays for what crosses the wire in tokens: the tool list on
+    every turn, each result once it is read. Claude Code, Codex and VS Code
+    show the model structuredContent; Cursor shows the text content; ChatGPT
+    shows both. So both are kept lean:
+
+    * tools/list: schemas without `title` noise (see _lean_schema), and
+      descriptions without hard wrapping (see _reflow).
+    * tools/call: ONE text block of compact JSON built from the tool's own
+      return value. The SDK default is one indent=2 block per list item,
+      so a 100-word spell_check came back as 97 blocks. structuredContent
+      keeps exactly the keys the tool returned; the SDK default fills every
+      declared-but-absent key with null. The lowlevel server still
+      validates structuredContent against the advertised outputSchema.
+    * argument errors: one line per field, without pydantic's docs URL or
+      a repr of the caller's input.
+    """
+
+    async def list_tools(self) -> list[MCPTool]:
+        tools = await super().list_tools()
+        for t in tools:
+            if t.description:
+                t.description = _reflow(t.description)
+            t.inputSchema = _lean_schema(t.inputSchema, output=False)
+            if t.outputSchema is not None:
+                t.outputSchema = _lean_schema(t.outputSchema, output=True)
+        return tools
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]):
+        tool = self._tool_manager.get_tool(name)
+        if tool is None:
+            raise ToolError(f"Unknown tool: {name}")
+        meta = tool.fn_metadata
+        try:
+            raw = await tool.run(arguments, context=self.get_context(), convert_result=False)
+        except ToolError as e:
+            cause = e.__cause__
+            if isinstance(cause, ValidationError) and cause.title == meta.arg_model.__name__:
+                raise ToolError("Input validation error: " + "; ".join(
+                    f"{'.'.join(map(str, err['loc']))}: {err['msg']}"
+                    for err in cause.errors(include_url=False, include_input=False)
+                )) from cause
+            raise
+        if meta.output_model is None or not isinstance(raw, (dict, list)):
+            return meta.convert_result(raw)  # not this server's shape: SDK default
+        text = pydantic_core.to_json(raw, fallback=str).decode()  # compact, keeps õäöü
+        payload = {"result": raw} if meta.wrap_output else raw
+        structured = meta.output_model.model_validate(payload).model_dump(
+            mode="json", by_alias=True, exclude_unset=True)
+        return [TextContent(type="text", text=text)], structured
+
+
+mcp = _EstonianMCP("estonian-mcp", instructions=SERVER_INSTRUCTIONS)
 # FastMCP's constructor doesn't accept a server-version kwarg, so reach
 # into the underlying MCPServer to override the SDK-default version that
 # would otherwise show up in `initialize` responses (and Smithery's UI).

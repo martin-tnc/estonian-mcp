@@ -3,11 +3,13 @@
 This exists because `paradigm` answered `isError` to every MCP client for
 two weeks and nothing here noticed. The tool functions were fine, the
 tests called them directly, and the failure lived in the layer between:
-the MCP server builds its structured payload from the tool's output
-schema and fills every DECLARED BUT ABSENT key with None before
-validating. A field typed `str` in a `total=False` TypedDict then fails
-as "None is not of type 'string'", and the caller gets an error instead
-of a paradigm.
+the SDK built the structured payload from the tool's output schema and
+filled every DECLARED BUT ABSENT key with None before validating. A field
+typed `str` in a `total=False` TypedDict then failed as "None is not of
+type 'string'", and the caller got an error instead of a paradigm. Since
+0.8.0 the server keeps only the keys a tool returned (_EstonianMCP), and
+this file also checks that wire format: one compact text block that says
+what structuredContent says, and no null a tool did not write.
 
 Calling the python function proves nothing about that, and neither does
 `mcp.call_tool`, which does not validate. So this test does what a client
@@ -21,6 +23,7 @@ Run via:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -141,6 +144,59 @@ async def run() -> None:
             text = content[0].text
         check(f"{name} returns a result, not an error string",
               "Output validation error" not in text, text[:100])
+
+    print("the wire format is lean")
+    # Every caller pays for these bytes in tokens; see _EstonianMCP. One
+    # compact block, saying exactly what structuredContent says.
+    for name, args in CALLS:
+        if name in NEEDS_RESOURCES:
+            continue
+        label = f"{name}({next(iter(args.values()))!r})"
+        content, structured = await server.mcp.call_tool(name, args)
+        text = content[0].text if content else ""
+        check(f"{label} answers in one text block", len(content) == 1, str(len(content)))
+        payload = json.loads(text)
+        check(f"{label} text is compact JSON",
+              text == json.dumps(payload, ensure_ascii=False, separators=(",", ":")), text[:80])
+        # List tools are wrapped as {"result": [...]} in structuredContent,
+        # which the outputSchema requires; the text is the bare list.
+        expected = structured["result"] if isinstance(payload, list) else structured
+        check(f"{label} text equals structuredContent", payload == expected, text[:80])
+    # The SDK default filled each declared-but-absent key with null, which
+    # Claude Code shows the model. paradigm('maja') omits several keys.
+    _content, structured = await server.mcp.call_tool("paradigm", {"word": "maja"})
+    raw = server.paradigm("maja")
+    check("structuredContent carries only the keys the tool returned",
+          set(structured) == set(raw), str(sorted(set(structured) ^ set(raw))))
+
+    print("advertised schemas carry no title noise")
+
+    def titles(node, path=""):
+        # A property NAMED "title" is data; only the annotation counts.
+        if isinstance(node, list):
+            return [t for i, x in enumerate(node) for t in titles(x, f"{path}/{i}")]
+        if not isinstance(node, dict):
+            return []
+        found = [path] if isinstance(node.get("title"), str) else []
+        for key, value in node.items():
+            if key in ("properties", "$defs") and isinstance(value, dict):
+                found += [t for n, sub in value.items() for t in titles(sub, f"{path}/{key}/{n}")]
+            elif key != "title":
+                found += titles(value, f"{path}/{key}")
+        return found
+
+    for name, tool in sorted(tools.items()):
+        left = titles(tool.inputSchema) + titles(tool.outputSchema or {})
+        check(f"{name} schemas have no title", not left, str(left[:3]))
+
+    print("descriptions arrive unwrapped and dedented")
+    # Hard wrapping and docstring indentation cost tokens and say nothing.
+    # A line break inside a paragraph is allowed only before a list item.
+    for name, tool in sorted(tools.items()):
+        bad = [line for block in tool.description.split("\n\n")
+               for line in block.split("\n")[1:] if not server._LIST_ITEM.match(line)]
+        bad += [line for line in tool.description.split("\n") if line != line.strip()]
+        check(f"{name} description is reflowed", not bad, str(bad[:2]))
 
     print("every tool in the registry is exercised here")
     registered = set(tools)
