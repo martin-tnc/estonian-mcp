@@ -198,6 +198,17 @@ async def run() -> None:
         bad += [line for line in tool.description.split("\n") if line != line.strip()]
         check(f"{name} description is reflowed", not bad, str(bad[:2]))
 
+    print("the server instructions carry the rules the tools no longer repeat")
+    # Per-tool notes and docstrings stopped repeating these in 0.8.0, on the
+    # strength of saying each once here. Losing one loses the steering.
+    instr = server.SERVER_INSTRUCTIONS
+    for needle in ("_estonian", "verbatim", "heuristics", "empty list",
+                   "does not apply is omitted", f"{server.MAX_TEXT_CHARS:,}",
+                   f"{server.MAX_DOC_CHARS:,}", "check_compound_familiarity"):
+        check(f"instructions mention {needle!r}", needle in instr)
+    check("instructions stay well under Claude Code's 4,096-character cut",
+          len(instr) < 3000, str(len(instr)))
+
     print("every tool in the registry is exercised here")
     registered = set(tools)
     covered = {name for name, _ in CALLS}
