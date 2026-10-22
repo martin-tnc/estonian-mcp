@@ -1341,33 +1341,27 @@ class _CheckResult(TypedDict, total=False):
 
 class _LegaleseResult(TypedDict, total=False):
     """Output of check_legalese: simplification hints + terms to preserve."""
-    text: str
     issues: list[dict]
     terms_of_art: list[dict]
     summary_estonian: str
-    note: str
 
 
 class _DefinedTermsResult(TypedDict, total=False):
     """Output of check_defined_terms: defined-term map + cross-references."""
-    text: str
     defined_terms: list[dict]
     cross_references: list[dict]
     issues: list[dict]
     summary_estonian: str
-    note: str
 
 
 class _LegalUsageResult(TypedDict, total=False):
     """Output of common_legal_usage: canonical collocations for a legal term."""
-    word: str
     lemma: str
     found: bool
     frequency: int
     common_before: list[dict]
     common_after: list[dict]
     summary_estonian: str
-    note: str
 
 
 # ---------------------------------------------------------------------------
@@ -3870,33 +3864,17 @@ def _check_legalese(text: str) -> dict:
                 "position": sent.start,
                 "rule": "complex-sentence",
                 "rule_estonian": "liiga pikk/keeruline lause",
-                "explanation": (
-                    f"Lause on {n_words} sõna ja {n_commas} koma. Kaalu "
-                    f"jagamist lühemateks lauseteks, termineid muutmata."
-                ),
+                "explanation": f"Lause on {n_words} sõna ja {n_commas} koma.",
                 "suggestion": "jaga lause lühemateks osadeks",
             })
 
     return {
-        "text": text,
         "issues": issues,
         "terms_of_art": terms,
         "summary_estonian": (
             f"Leiti {len(issues)} lihtsustamiskohta; säilitada tuleb "
             f"{len(terms)} juriidilist terminit." if (issues or terms)
             else "Kantseliiti ega juriidilisi termineid ei tuvastatud."
-        ),
-        "note": (
-            "Heuristic legalese-simplification aid. `issues` flags archaic "
-            "'kantseliit' filler (käesolev → see, juhul kui → kui) and "
-            "over-long / over-nested sentences that can be split, WITHOUT "
-            "changing legal meaning. `terms_of_art` lists specialised legal "
-            "terms detected that MUST be preserved verbatim when simplifying: "
-            "replacing e.g. 'vastutus' or 'hagi' with a general synonym would "
-            "change the legal meaning. STARTER lexicons, precision-first and "
-            "not exhaustive: absence of flags is not proof the text is plain, "
-            "and terms_of_art will miss terms not yet in the list. Quote "
-            "rule_estonian verbatim in Estonian replies."
         ),
     }
 
@@ -3967,24 +3945,12 @@ def _check_defined_terms(text: str) -> dict:
              for m in _XREF_RE.finditer(text)]
 
     return {
-        "text": text if len(text) <= 2000 else text[:2000] + "…",
         "defined_terms": defined_terms,
         "cross_references": xrefs,
         "issues": issues,
         "summary_estonian": (
             f"Leiti {len(defined_terms)} defineeritud mõistet, {len(xrefs)} "
             f"viidet ja {len(issues)} probleemi."
-        ),
-        "note": (
-            "Structural check for long legal documents. defined_terms maps "
-            "each '(edaspidi «X»)' definition to how many times the term "
-            "actually occurs; cross_references lists § / lõige / punkt / "
-            "artikkel references (surfaced, not validated). issues flags "
-            "defined-but-unused and doubly-defined terms. Regex-based and "
-            "PII-free (nothing stored); input cap is raised to 500,000 chars "
-            "so whole contracts fit. `text` is truncated to a 2,000-char "
-            "preview in the response. Quote rule_estonian verbatim in "
-            "Estonian replies."
         ),
     }
 
@@ -3996,20 +3962,16 @@ def _check_defined_terms(text: str) -> dict:
     openWorldHint=False,
 ))
 @_counted
-def check_legalese(text: Annotated[str, Field(description="Estonian legal text to lint for plain-language simplification while protecting legal terms of art.")]) -> _LegaleseResult:
-    """Aid for simplifying Estonian legal text WITHOUT losing legal precision.
+def check_legalese(text: Annotated[str, Field(description="Estonian statute or contract text.")]) -> _LegaleseResult:
+    """Plain-language aid for Estonian statutes and contracts; rewrites
+    must keep the legal meaning.
 
-    Returns two things:
-    - `issues`: archaic 'kantseliit' filler with plain equivalents
-      (`käesolev` → `see`, `juhul kui` → `kui`), plus over-long / heavily
-      subordinated sentences worth splitting.
-    - `terms_of_art`: specialised legal terms detected in the text that
-      MUST be kept verbatim when rewriting. Swapping `hagi` or `vastutus`
-      for a general synonym changes the legal meaning. Use this as a
-      do-not-touch list while you simplify.
-
-    Heuristic, precision-first, backed by curated starter lexicons (not
-    exhaustive). Input capped at 100,000 characters.
+    issues: archaic filler and stock phrases with a plainer suggestion,
+    and over-long sentences to split. terms_of_art: legal terms (first
+    use per lemma) to keep verbatim, never swapped for a general synonym.
+    Starter lexicons: an empty or short issues list does not mean the
+    text is plain, and an unlisted word can still be a term of art. For
+    reports and business prose use check_officialese.
     """
     return _check_legalese(text)
 
@@ -4021,17 +3983,15 @@ def check_legalese(text: Annotated[str, Field(description="Estonian legal text t
     openWorldHint=False,
 ))
 @_counted
-def check_defined_terms(text: Annotated[str, Field(description="A long Estonian legal document to map defined terms ('edaspidi «X»') and § / lõige / punkt cross-references.")]) -> _DefinedTermsResult:
-    """Structural map of a long Estonian legal document.
+def check_defined_terms(text: Annotated[str, Field(description="Whole Estonian legal document.")]) -> _DefinedTermsResult:
+    """Maps defined terms and cross-references in a long Estonian legal
+    document.
 
-    Extracts every term defined with `(edaspidi «X»)`, counts how often each
-    is actually used, lists `§` / `lõige` / `punkt` / `artikkel`
-    cross-references, and flags defined-but-unused or doubly-defined terms:
-    the consistency errors that creep into long contracts and statutes.
-
-    Regex-based and PII-free (nothing is stored). Input cap is raised to
-    500,000 characters so a whole contract fits in one call; the echoed
-    `text` is truncated to a 2,000-character preview.
+    defined_terms: each (edaspidi «X») term. total_occurrences counts
+    exact-form, case-sensitive matches, the definition included, so it
+    misses inflected uses: verify a defined-but-unused issue before
+    acting. cross_references: §, lõige, punkt and artikkel mentions, not
+    validated. issues: terms defined twice or unused.
     """
     return _check_defined_terms(text)
 
@@ -4055,11 +4015,14 @@ def _common_legal_usage(word: str) -> dict:
         lemma = (_first(list(span.lemma)) or "").lower()
         break
     lemmas = idx.get("lemmas", {})
-    entry = lemmas.get(lemma) or lemmas.get(word.lower())
+    # The entry actually matched, which the summary names: the lemma, or
+    # the lowercased input when the lemma is not indexed (võime analyses
+    # as võima, a light verb the index drops, but võime is indexed).
+    key = lemma if lemmas.get(lemma) else word.lower()
+    entry = lemmas.get(key)
 
     if not entry:
         return {
-            "word": word,
             "lemma": lemma or word.lower(),
             "found": False,
             "frequency": 0,
@@ -4069,38 +4032,18 @@ def _common_legal_usage(word: str) -> dict:
                 f"Sõna '{word}' ei esine juriidilise korpuse indeksis "
                 f"(võib olla haruldane või mitte juriidiline termin)."
             ),
-            "note": _LEGAL_USAGE_NOTE,
         }
 
     return {
-        "word": word,
         "lemma": lemma or word.lower(),
         "found": True,
         "frequency": entry.get("freq", 0),
         "common_before": [{"word": w, "count": c} for w, c in entry.get("left", [])],
         "common_after": [{"word": w, "count": c} for w, c in entry.get("right", [])],
         "summary_estonian": (
-            f"'{word}' esineb juriidilises korpuses {entry.get('freq', 0)} korda; "
-            f"sagedasimad naabersõnad on toodud common_before / common_after all."
+            f"'{key}' esineb juriidilises korpuses {entry.get('freq', 0)} korda."
         ),
-        "note": _LEGAL_USAGE_NOTE,
     }
-
-
-_LEGAL_USAGE_NOTE = (
-    "Canonical legal-usage lookup from an offline collocation index distilled "
-    "from Estonian legal corpora (see scripts/build_legal_collocations.py). "
-    "common_before / common_after are the content words most often seen "
-    "immediately before / after the term's lemma in real legislation, with "
-    "raw counts. Use them to pick idiomatic legal phrasing (e.g. 'esitama "
-    "hagi', 'kohustuse täitmine') instead of inventing collocations. It is a "
-    "frequency signal, NOT prescriptive: rare-but-correct phrasings exist, and "
-    "coverage is bounded by the corpus. The bundled index is built from "
-    "public-domain Riigi Teataja legislation: five core codes (obligations, "
-    "general civil, civil procedure, property, penal), ~2,000 legal terms; "
-    "broaden coverage by adding more acts and supplying the index via "
-    "ESTNLTK_MCP_LEGAL_INDEX. Deterministic and offline; no text is stored."
-)
 
 
 @mcp.tool(annotations=ToolAnnotations(
@@ -4110,18 +4053,14 @@ _LEGAL_USAGE_NOTE = (
     openWorldHint=False,
 ))
 @_counted
-def common_legal_usage(word: Annotated[str, Field(description="A single Estonian (legal) word to look up canonical collocations for, e.g. 'hagi', 'kohustus', 'taotlus'.")]) -> _LegalUsageResult:
-    """Canonical legal collocations for a term, from an offline corpus index.
+def common_legal_usage(word: Annotated[str, Field(description="One Estonian word, any inflected form.")]) -> _LegalUsageResult:
+    """Standard legal collocations for an Estonian word, from five core
+    Riigi Teataja codes. Use it instead of inventing legal phrasing.
 
-    Answers "what's the standard legal phrasing": returns how often the
-    term occurs in Estonian legal text and the words most frequently seen
-    directly before/after it (`hagi` → `esitama` before it = 'esitama hagi';
-    `kohustus` → `täitmine` after it = 'kohustuse täitmine'). Use it so the
-    AI picks real, idiomatic legalese instead of inventing collocations.
-
-    A frequency signal, not prescriptive; coverage is bounded by the corpus.
-    The bundled index is a proof-of-concept sample; the full-corpus artifact
-    is loaded via ESTNLTK_MCP_LEGAL_INDEX. Input is a single word.
+    common_before / common_after: the commonest lemmas of the nearest
+    content word on each side, with counts; inflect them to fit. A
+    frequency signal, not a rule. found: false says only that the index
+    lacks the word, not that it is wrong.
     """
     return _common_legal_usage(word)
 
