@@ -5,7 +5,7 @@ under adjective-noun agreement. Two defects are pinned here.
 
 1. The reported one: the `-mata` form was omitted. EKI is explicit that it
    is the tud-participle's negative counterpart and "jääb alati
-   käändumatuks" — `täitmata lepingute reserv`, not *täitmatute. The old
+   käändumatuks": `täitmata lepingute reserv`, not *täitmatute. The old
    ending test listed only -tud/-dud/-nud, so every `-mata` attribute was
    reported as declinable.
 
@@ -95,7 +95,7 @@ def ordinary_adjectives_and_lexical_indeclinables() -> None:
     print("everything else is unchanged")
     for w in ("suur", "ilus", "rahuldav", "kiire", "sinine"):
         check(f"{w} declines", server._is_indeclinable_attr(w) is False)
-    # Explicit words, not `sorted(_INDECLINABLE_ADJ_ET)[:5]` — deriving the
+    # Explicit words, not `sorted(_INDECLINABLE_ADJ_ET)[:5]`: deriving the
     # cases from the set under test means the assertion cannot fail.
     for w in ("täis", "eri", "väärt", "alasti", "purjus"):
         check(f"lexical indeclinable {w}",
@@ -120,7 +120,7 @@ def caller_supplied_analyses() -> None:
         ("Suur maja seisis tänaval.", "Suur"),
     ]
     for sentence, target in SENTENCES:
-        toks = {t["word"]: t["indeclinable"]
+        toks = {t["word"]: t.get("indeclinable", False)
                 for t in server.analyze_morphology(sentence)}
         in_context = toks[target]
         isolated = server._is_indeclinable_attr(target)
@@ -134,7 +134,7 @@ def caller_supplied_analyses() -> None:
     check("an A/'' reading anywhere freezes it",
           server._is_indeclinable_attr(
               "tuntud", (("A", "pl n", "tuntud"), ("A", "", "tuntud"))) is True)
-    # Ordering must not decide the verdict — that was the fragility of
+    # Ordering must not decide the verdict; that was the fragility of
     # taking only Vabamorf's first analysis.
     check("verdict is order-independent",
           server._is_indeclinable_attr("tuntud", (("A", "", "tuntud"), ("V", "tud", "tundma")))
@@ -176,7 +176,7 @@ def ordinary_plural_nouns_are_not_frozen() -> None:
               "säästud", "juustud", "sõidud"):
         check(f"{w}", server._is_indeclinable_attr(w) is False,
               "an ordinary plural noun must not be frozen")
-    got = {t["word"]: t["indeclinable"]
+    got = {t["word"]: t.get("indeclinable", False)
            for t in server.analyze_morphology("haruldased linnud lendasid")}
     check(f"in context: {got}", got.get("linnud") is False, str(got))
 
@@ -189,7 +189,7 @@ def known_limits_are_documented() -> None:
     for w in ("töötud", "korratud", "maitsetud"):
         check(f"{w}: caritive whose lemma is indistinguishable from deverbal",
               server._is_indeclinable_attr(w) is True,
-              "documented limit — lemma -tu matches both classes")
+              "documented limit: lemma -tu matches both classes")
     for w in ("nõutud", "kaalutud"):
         check(f"{w}: participle/caritive homograph resolves to the participle",
               server._is_indeclinable_attr(w) is True,
@@ -198,11 +198,11 @@ def known_limits_are_documented() -> None:
     # Context resolves what isolation cannot. This is the honest shape of
     # the limit: the TOOL gets töötud right, the bare-word fallback does
     # not, and callers with a sentence should pass their analyses.
-    in_context = {t["word"]: t["indeclinable"]
+    in_context = {t["word"]: t.get("indeclinable", False)
                   for t in server.analyze_morphology("töötud inimesed said abi")}
     check("context resolves töötud correctly where isolation cannot",
           in_context["töötud"] is False,
-          f"{in_context} — analyze_morphology should decline this caritive")
+          f"{in_context}: analyze_morphology should decline this caritive")
     check("...and that is a genuine isolated/contextual divergence",
           server._is_indeclinable_attr("töötud") is True,
           "if isolation now agrees, tighten the docstring's KNOWN LIMITS")
@@ -215,8 +215,13 @@ def end_to_end_through_the_tool() -> None:
         ("õnnetud lapsed", {"õnnetud": False, "lapsed": False}),
         ("tuntud laulja", {"tuntud": True, "laulja": False}),
     ):
-        got = {t["word"]: t["indeclinable"] for t in server.analyze_morphology(phrase)}
+        rows = server.analyze_morphology(phrase)
+        got = {t["word"]: t.get("indeclinable", False) for t in rows}
         check(f"{phrase!r} -> {got}", got == expected, f"expected {expected}")
+        # The flag is sent only when it is true; a declining word has no key.
+        check(f"{phrase!r}: the key appears only as true",
+              all(t.get("indeclinable", True) is True for t in rows)
+              and all(("indeclinable" in t) == expected[t["word"]] for t in rows), str(rows))
 
 
 def probe_is_cached_and_safe() -> None:

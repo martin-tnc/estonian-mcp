@@ -5,7 +5,7 @@ EKI rules that the 13 disputed gold rows in that dataset get wrong.
 
 1. WHOLE WORD CLASSES WERE DENIED A PARADIGM. `_NOMINAL_POS` listed only
    S/A/P/N, so every ordinal (`esimene`), comparative (`parem`) and
-   superlative (`parim`) got "Sõnaliik 'O' ei käändu ega pöördu —
+   superlative (`parim`) got "Sõnaliik 'O' ei käändu ega pöördu:
    paradigmat pole." Those are 1.5% of the 20k most frequent Estonian word
    forms, and Vabamorf synthesizes all of them correctly under their own
    POS code.
@@ -579,7 +579,7 @@ def analysis_form_codes_carry_their_estonian_name() -> None:
     ):
         rec = next(w for w in server.analyze_morphology(text) if w["word"] == word)
         check(f"{word}: {code} -> {label}",
-              rec["form"] == code and rec["form_estonian"] == label, str(rec.get("form_estonian")))
+              rec["form"] == code and rec.get("form_estonian") == label, str(rec.get("form_estonian")))
 
     print("a neg code is read against its lemma, not by prefixing 'eitav'")
     # `neg o` is `ära`, and also `pole`, and also `lähe`. Prefixing
@@ -604,12 +604,12 @@ def analysis_form_codes_carry_their_estonian_name() -> None:
         rec = next(w for w in server.analyze_morphology(text) if w["word"] == word)
         check(f"{word}: {code} ({lemma}) -> {expected}",
               rec["form"] == code and rec["lemma"] == lemma
-              and rec["form_estonian"] == expected,
-              f"{rec['lemma']!r} {rec['form']!r} -> {rec['form_estonian']!r}")
+              and rec.get("form_estonian") == expected,
+              f"{rec['lemma']!r} {rec['form']!r} -> {rec.get('form_estonian')!r}")
         alt = next(a for w in server.analyze_morphology(text, all_analyses=True)
                    if w["word"] == word for a in w["analyses"] if a["form"] == code)
-        check(f"{word}: same under all_analyses", alt["form_estonian"] == expected,
-              str(alt["form_estonian"]))
+        check(f"{word}: same under all_analyses", alt.get("form_estonian") == expected,
+              str(alt.get("form_estonian")))
 
     print("the case table is pinned the same way")
     nominal = {e["form"]: e["form_estonian"] for e in server._paradigm("maja")["forms"]}
@@ -665,7 +665,7 @@ def analysis_form_codes_carry_their_estonian_name() -> None:
             "varem. Kasutades neid vahendeid, tuleb olla ettevaatlik. Ära unusta lepingut "
             "allkirjastada! Seda ei kasutatud ja poleks pidanudki kasutama.")
     words = [w for w in server.analyze_morphology(text) if w["form"]]
-    missing = [(w["word"], w["form"]) for w in words if w["form_estonian"] is None]
+    missing = [(w["word"], w["form"]) for w in words if w.get("form_estonian") is None]
     check(f"every form code in {len(words)} words is named", not missing, str(missing))
 
 
@@ -982,7 +982,7 @@ def the_short_illative_is_in_the_table() -> None:
 
     The table used to stop at the long form. For these words the short one
     is what Estonians write, so a caller reading the table would "correct"
-    a correct majja into majasse — the exact failure this server exists to
+    a correct majja into majasse, the exact failure this server exists to
     prevent, and reported by a reader who had measured how much parallel
     forms cost single-reference scoring.
     """

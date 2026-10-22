@@ -62,7 +62,9 @@ CALLS: list[tuple[str, dict]] = [
     ("lemmatize", {"text": "Koerad jooksevad."}),
     ("pos_tag", {"text": "Koerad jooksevad."}),
     ("analyze_morphology", {"text": "Läksin majja."}),
-    ("spell_check", {"text": "Tere maailm"}),
+    ("analyze_morphology", {"text": "Ta on kodus.", "all_analyses": True}),
+    ("spell_check", {"text": "Tere maailmm"}),   # a misspelled row
+    ("spell_check", {"text": "Tere maailm."}),   # clean: an empty list
     ("syllabify", {"word": "koerad"}),
     ("named_entities", {"text": "Tallinn on Eesti pealinn."}),
     ("paradigm", {"word": "maja"}),          # single paradigm, most keys absent
@@ -168,6 +170,17 @@ async def run() -> None:
     raw = server.paradigm("maja")
     check("structuredContent carries only the keys the tool returned",
           set(structured) == set(raw), str(sorted(set(structured) ^ set(raw))))
+    # spell_check lists only misspelled words, so clean text, its most
+    # common result, is an empty list. A client that reads only the text
+    # must still get an answer, not a blank result.
+    content, structured = await server.mcp.call_tool("spell_check", {"text": "Tere maailm."})
+    check("clean spell_check text answers one '[]' block",
+          [c.text for c in content] == ["[]"] and structured == {"result": []},
+          f"{[c.text for c in content]} {structured}")
+    content, structured = await server.mcp.call_tool("spell_check", {"text": "Tere maailmm"})
+    check("a misspelling comes back as one populated row",
+          [r["text"] for r in structured["result"]] == ["maailmm"]
+          and structured["result"][0]["spelling"] is False, str(structured))
 
     print("advertised schemas carry no title noise")
 

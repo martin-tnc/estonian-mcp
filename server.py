@@ -641,9 +641,9 @@ _MARKED_LEMMAS_ET: dict[str, tuple[str, str]] = {
 
 # POS-tag-based usage notes. Maps Vabamorf POS codes that signal
 # non-routine usage. Skipped: S/V/A/P/D/K/J/N/Z (standard parts of
-# speech, no special flag).
+# speech, no special flag) and X, which is a verb-bound word (`plehku`
+# in `pani plehku`), not a foreign one.
 _POS_USAGE_NOTES_ET: dict[str, tuple[str, str]] = {
-    "X": ("foreign", "võõrsõna või tundmatu sõna"),
     "Y": ("abbreviation", "lühend"),
     "I": ("interjection", "interjektsioon"),
     "H": ("proper-noun", "pärisnimi"),
@@ -1077,6 +1077,15 @@ def _first(values: list[Any] | None) -> Any:
     return values[0]
 
 
+def _is_punct(span) -> bool:
+    """True when every Vabamorf reading of a morph_analysis span is Z:
+    punctuation, and emoticons such as `:)`, which Vabamorf tags Z too.
+    Symbols (§, €) are Y and are kept. lemmatize, pos_tag and
+    analyze_morphology leave these out; tokenize keeps them."""
+    pos = list(span.partofspeech)
+    return bool(pos) and all(p == "Z" for p in pos)
+
+
 # Olema-forms (plus the negative 'pole' family) that turn a following -tud
 # participle into an impersonal predicate rather than a modifier:
 # 'on kasutatud andmeid' (impersonal) vs 'lukustatud hindamisosa'
@@ -1391,11 +1400,9 @@ class _LegalUsageResult(TypedDict, total=False):
     openWorldHint=False,
 ))
 @_counted
-def tokenize(text: Annotated[str, Field(description="Estonian text to split into sentences and words.")]) -> _TokenizeResult:
-    """Split Estonian text into sentences and words.
-
-    Returns a dict with `sentences` (list of strings) and `words` (list of strings).
-    Input is capped at 100,000 characters.
+def tokenize(text: Annotated[str, Field(description="Estonian text.")]) -> _TokenizeResult:
+    """Split Estonian text into `sentences` and `words` (every token in
+    order, punctuation included).
     """
     _check_text(text)
     Text = _Text()
@@ -1409,7 +1416,7 @@ def tokenize(text: Annotated[str, Field(description="Estonian text to split into
 def _usage_note(lemma: str | None, pos: str | None) -> tuple[str | None, str | None]:
     """Return (code, estonian_note) for a word, or (None, None) if neutral.
 
-    Priority: POS-tag markers (X, Y, I, H) before lemma-lexicon markers.
+    Priority: POS-tag markers (Y, I, H) before lemma-lexicon markers.
     Word is matched lowercased against the lemma lexicon.
     """
     if pos and pos in _POS_USAGE_NOTES_ET:
@@ -1565,34 +1572,19 @@ def _is_indeclinable_attr(
     openWorldHint=False,
 ))
 @_counted
-def analyze_morphology(text: Annotated[str, Field(description="Estonian text to analyse morphologically.")], all_analyses: Annotated[bool, Field(description="Return every ambiguous analysis per word instead of only the most likely one.")] = False) -> list[dict]:
-    """Run full morphological analysis on Estonian text.
+def analyze_morphology(text: Annotated[str, Field(description="Estonian text.")], all_analyses: Annotated[bool, Field(description="Return every reading left after in-context disambiguation, in an `analyses` list, instead of only the most likely one.")] = False) -> list[dict]:
+    """Morphological analysis of each word (punctuation omitted): `word`,
+    `lemma`, `partofspeech` (pos_tag's tags), `form` (Vabamorf code, ""
+    if uninflected), `root` (`_` joins compound parts), `ending` ("0" =
+    none).
 
-    For each word returns lemma(s), part-of-speech, grammatical form, root,
-    ending, clitic, compound parts, ambiguity info, and a usage note
-    flagging archaic / foreign / abbreviation / interjection / proper-noun
-    cases. By default returns the first (most likely) analysis per word;
-    set `all_analyses=True` to return every ambiguous analysis.
-
-    Each word's response includes:
-      - lemma, partofspeech, form, root, ending, clitic, root_tokens
-      - analyses_count: how many alternative analyses Vabamorf produced
-        for this surface form (>1 means the word is morphologically
-        ambiguous)
-      - is_ambiguous: shorthand for analyses_count > 1
-      - usage_note: machine code (None if neutral)
-        ("archaic" / "foreign" / "abbreviation" / "interjection" /
-          "proper-noun")
-      - usage_note_estonian: human-readable Estonian rendering of the
-        same flag (quote this verbatim in Estonian replies; do NOT
-        translate the English usage_note yourself)
-      - indeclinable: True for words that stay in base form when used
-        attributively (lexical indeclinables like `täis`, -tud/-nud past
-        participles like `tuntud`, and the -mata form like `täitmata`),
-        i.e. they do NOT take the noun's case ending in agreement. Use this before inflecting a
-        noun phrase so you don't wrongly decline an invariant adjective.
-
-    Input is capped at 100,000 characters.
+    Present only when they apply: `form_estonian` (the form's Estonian
+    name), `clitic`, `root_tokens` (compound parts), `analyses_count` (>1:
+    still ambiguous in context), `usage_note` (archaic, foreign,
+    abbreviation, interjection, proper-noun) and the more precise
+    `usage_note_estonian` (often names the neutral word), `indeclinable:
+    true` (keeps its base form before a noun: täis, tuntud, täitmata;
+    check it before declining a noun phrase).
     """
     _check_text(text)
     Text = _Text()
@@ -1600,6 +1592,8 @@ def analyze_morphology(text: Annotated[str, Field(description="Estonian text to 
     t.tag_layer(["morph_analysis"])
     out: list[dict] = []
     for span in t.morph_analysis:
+        if _is_punct(span):
+            continue
         word = span.text
         lemmas = list(span.lemma)
         pos = list(span.partofspeech)
@@ -1607,55 +1601,52 @@ def analyze_morphology(text: Annotated[str, Field(description="Estonian text to 
         roots = list(span.root)
         endings = list(span.ending)
         clitics = list(span.clitic)
-        root_tokens = [list(rt) for rt in span.root_tokens]
-        analyses_count = len(lemmas)
-        is_ambiguous = analyses_count > 1
-        code, et = _usage_note(_first(lemmas), _first(pos))
-        indeclinable = _is_indeclinable_attr(
-            word,
-            tuple((p or "", f or "", (lm or "").lower())
-                  for p, f, lm in zip(pos, forms, lemmas, strict=False)))
+        root_tokens = list(span.root_tokens)
+        readings = [
+            _morph_reading(lemmas[i], pos[i], forms[i], roots[i], endings[i], clitics[i],
+                           root_tokens[i] if i < len(root_tokens) else None)
+            for i in range(len(lemmas))
+        ]
         if all_analyses:
-            analyses = [
-                {
-                    "lemma": lemmas[i],
-                    "partofspeech": pos[i],
-                    "form": forms[i],
-                    "form_estonian": _form_et(forms[i], lemmas[i]),
-                    "root": roots[i],
-                    "ending": endings[i],
-                    "clitic": clitics[i],
-                    "root_tokens": root_tokens[i] if i < len(root_tokens) else [],
-                }
-                for i in range(len(lemmas))
-            ]
-            out.append({
-                "word": word,
-                "analyses": analyses,
-                "analyses_count": analyses_count,
-                "is_ambiguous": is_ambiguous,
-                "usage_note": code,
-                "usage_note_estonian": et,
-                "indeclinable": indeclinable,
-            })
+            # No analyses_count here: it would only repeat len(analyses).
+            entry: dict = {"word": word, "analyses": readings}
         else:
-            out.append({
-                "word": word,
-                "lemma": _first(lemmas),
-                "partofspeech": _first(pos),
-                "form": _first(forms),
-                "form_estonian": _form_et(_first(forms), _first(lemmas)),
-                "root": _first(roots),
-                "ending": _first(endings),
-                "clitic": _first(clitics),
-                "root_tokens": _first(root_tokens) or [],
-                "analyses_count": analyses_count,
-                "is_ambiguous": is_ambiguous,
-                "usage_note": code,
-                "usage_note_estonian": et,
-                "indeclinable": indeclinable,
-            })
+            first = readings[0] if readings else _morph_reading(
+                None, None, None, None, None, None, None)
+            entry = {"word": word, **first}
+            if len(readings) > 1:
+                entry["analyses_count"] = len(readings)
+        code, et = _usage_note(_first(lemmas), _first(pos))
+        if code:
+            entry["usage_note"] = code
+            entry["usage_note_estonian"] = et
+        if _is_indeclinable_attr(
+                word,
+                tuple((p or "", f or "", (lm or "").lower())
+                      for p, f, lm in zip(pos, forms, lemmas, strict=False))):
+            entry["indeclinable"] = True
+        out.append(entry)
     return out
+
+
+def _morph_reading(lemma: str | None, pos: str | None, form: str | None,
+                   root: str | None, ending: str | None, clitic: str | None,
+                   parts: Any) -> dict:
+    """One Vabamorf reading as analyze_morphology reports it, in either
+    mode. A key that would say nothing is left out: `form_estonian` when
+    the form has no Estonian name, an empty `clitic`, and a one-part
+    `root_tokens`, which is only `root` without its markers."""
+    reading: dict = {"lemma": lemma, "partofspeech": pos, "form": form}
+    label = _form_et(form, lemma)
+    if label:
+        reading["form_estonian"] = label
+    reading["root"] = root
+    reading["ending"] = ending
+    if clitic:
+        reading["clitic"] = clitic
+    if parts and len(parts) > 1:
+        reading["root_tokens"] = list(parts)
+    return reading
 
 
 def _form_et(code: str, lemma: str | None = None) -> str | None:
@@ -2178,11 +2169,9 @@ def paradigm(word: Annotated[str, Field(description="A single Estonian word (lem
     openWorldHint=False,
 ))
 @_counted
-def lemmatize(text: Annotated[str, Field(description="Estonian text to reduce to dictionary-form lemmas.")]) -> list[dict]:
-    """Return lemma (dictionary form) for each word in the text.
-
-    Concise output: `[{"word": ..., "lemma": ...}, ...]`. Input is capped at
-    100,000 characters.
+def lemmatize(text: Annotated[str, Field(description="Estonian text.")]) -> list[dict]:
+    """Lemma (dictionary form) of each word, from its most likely
+    analysis. Punctuation is omitted.
     """
     _check_text(text)
     Text = _Text()
@@ -2191,6 +2180,7 @@ def lemmatize(text: Annotated[str, Field(description="Estonian text to reduce to
     return [
         {"word": span.text, "lemma": _first(list(span.lemma))}
         for span in t.morph_analysis
+        if not _is_punct(span)
     ]
 
 
@@ -2201,12 +2191,14 @@ def lemmatize(text: Annotated[str, Field(description="Estonian text to reduce to
     openWorldHint=False,
 ))
 @_counted
-def pos_tag(text: Annotated[str, Field(description="Estonian text to part-of-speech tag.")]) -> list[dict]:
-    """Return part-of-speech tag for each word.
+def pos_tag(text: Annotated[str, Field(description="Estonian text.")]) -> list[dict]:
+    """Part-of-speech tag of each word (most likely reading); punctuation
+    omitted.
 
-    POS tag set: S=noun, V=verb, A=adj, P=pron, D=adv, K=adp, J=conj,
-    N=numeral, I=interj, Y=abbrev, X=foreign, Z=punct, etc. Input is capped
-    at 100,000 characters.
+    S noun, H proper noun, V verb, A adjective (C comparative, U
+    superlative, G indeclinable), P pronoun, D adverb, K adposition, J
+    conjunction, N cardinal, O ordinal, I interjection, Y abbreviation or
+    symbol (§, €), X verb-bound word (`plehku`).
     """
     _check_text(text)
     Text = _Text()
@@ -2215,6 +2207,7 @@ def pos_tag(text: Annotated[str, Field(description="Estonian text to part-of-spe
     return [
         {"word": span.text, "partofspeech": _first(list(span.partofspeech))}
         for span in t.morph_analysis
+        if not _is_punct(span)
     ]
 
 
@@ -2225,19 +2218,15 @@ def pos_tag(text: Annotated[str, Field(description="Estonian text to part-of-spe
     openWorldHint=False,
 ))
 @_counted
-def spell_check(text: Annotated[str, Field(description="Estonian text to spell-check.")], suggestions: Annotated[bool, Field(description="Include correction suggestions for misspelled words.")] = True) -> list[dict]:
-    """Check Estonian spelling for each word and optionally return suggestions.
+def spell_check(text: Annotated[str, Field(description="Estonian text.")], suggestions: Annotated[bool, Field(description="Include correction suggestions for misspelled words.")] = True) -> list[dict]:
+    """Spell-check Estonian text. Lists only the misspelled tokens, each
+    occurrence in text order: `text`, `spelling: false`, and
+    `suggestions` when Vabamorf has any. An empty list means every word
+    passed.
 
-    Returns one entry per word with `text`, `spelling` (bool), and
-    `suggestions` (list of correction candidates) when `suggestions=True`.
-    Input is capped at 100,000 characters.
-
-    CAVEAT: Vabamorf accepts ANY morphologically well-formed word,
-    including compounds you just invented (e.g. `toortõlkeoht`). It
-    splits them into valid roots and reports `spelling: true`. So passing
-    spell_check does NOT mean a word is real, attested Estonian. For a
-    compound you coined yourself, ask `check_compound_familiarity` whether
-    the lemma is attested in the corpus vocabulary or Estonian WordNet.
+    Passing proves only that a word is well-formed: Vabamorf accepts any
+    valid compound, even an invented one (`toortõlkeoht`). Check a
+    compound you coined with check_compound_familiarity.
     """
     _check_text(text)
     Text = _Text()
@@ -2246,7 +2235,14 @@ def spell_check(text: Annotated[str, Field(description="Estonian text to spell-c
     words = [w.text for w in t.words]
     if not words:
         return []
-    return _vabamorf().spellcheck(words, suggestions=suggestions)
+    out: list[dict] = []
+    for row in _vabamorf().spellcheck(words, suggestions=suggestions):
+        if row["spelling"]:
+            continue
+        if not row.get("suggestions"):
+            row.pop("suggestions", None)
+        out.append(row)
+    return out
 
 
 @mcp.tool(annotations=ToolAnnotations(
@@ -2256,11 +2252,10 @@ def spell_check(text: Annotated[str, Field(description="Estonian text to spell-c
     openWorldHint=False,
 ))
 @_counted
-def syllabify(word: Annotated[str, Field(description="A single Estonian word (no whitespace) to split into syllables.")]) -> list[dict]:
-    """Split a single Estonian word into syllables with quantity and accent.
-
-    Each syllable entry: `{"syllable": str, "quantity": int, "accent": int}`.
-    Input is capped at 200 characters and must contain no whitespace.
+def syllabify(word: Annotated[str, Field(description="One Estonian word, no whitespace.")]) -> list[dict]:
+    """Lowercased syllables of one Estonian word; `quantity` is the välde
+    (1-3), `accent` 1 marks stress. Vabamorf's guesser syllabifier: it can
+    err even on common words.
     """
     _check_text(word, limit=MAX_WORD_CHARS, name="word")
     if any(ch.isspace() for ch in word):
@@ -2276,11 +2271,10 @@ def syllabify(word: Annotated[str, Field(description="A single Estonian word (no
     openWorldHint=False,
 ))
 @_counted
-def named_entities(text: Annotated[str, Field(description="Estonian text to extract named entities (people, places, organisations) from.")]) -> list[dict]:
-    """Extract named entities (PER/LOC/ORG) using EstNLTK's CRF model.
-
-    Returns `[{"text": ..., "type": ..., "start": ..., "end": ...}, ...]`.
-    Input is capped at 100,000 characters.
+def named_entities(text: Annotated[str, Field(description="Estonian text.")]) -> list[dict]:
+    """People, places and organisations (`type` PER, LOC, ORG) with
+    character offsets `start` and `end`. `text` is the span as written,
+    often inflected (`Tallinnas`).
     """
     _check_text(text)
     Text = _Text()

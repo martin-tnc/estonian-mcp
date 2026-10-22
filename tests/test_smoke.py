@@ -41,6 +41,7 @@ print("tokenize")
 tok = server.tokenize(SAMPLE)
 check("returns sentences+words", "sentences" in tok and "words" in tok)
 check("non-empty words", len(tok["words"]) >= 6)
+check("keeps punctuation", tok["words"][-1] == ".", str(tok["words"]))
 
 print("lemmatize")
 lem = server.lemmatize("Mina sõin täna hommikul Tallinnas putru.")
@@ -48,25 +49,79 @@ lemmas = {row["lemma"] for row in lem}
 check("recognises 'sööma'", "sööma" in lemmas, str(lemmas))
 check("recognises 'Tallinn'", "Tallinn" in lemmas, str(lemmas))
 check("recognises 'puder'", "puder" in lemmas, str(lemmas))
+check("every entry keeps word and lemma, even when they match",
+      all(set(row) == {"word", "lemma"} for row in lem)
+      and {"word": "täna", "lemma": "täna"} in lem, str(lem))
+check("punctuation is omitted", [row["word"] for row in lem]
+      == ["Mina", "sõin", "täna", "hommikul", "Tallinnas", "putru"], str(lem))
 
 print("pos_tag")
 pos = server.pos_tag(SAMPLE)
 check("first tokens are non-empty POS", all(row["partofspeech"] for row in pos[:5]))
+pos = server.pos_tag("Ta pani plehku, aga § 2 jäi :) alles.")
+tags = {row["word"]: row["partofspeech"] for row in pos}
+check("no punctuation or emoticon entries", not any(t == "Z" for t in tags.values())
+      and not {",", ":)", "."} & set(tags), str(pos))
+check("a symbol is kept as Y", tags.get("§") == "Y", str(tags))
+check("'plehku' is X, the verb-bound word", tags.get("plehku") == "X", str(tags))
 
 print("analyze_morphology")
 morph = server.analyze_morphology("Tere maailm!")
-check("compound 'maailm' splits", any(row.get("root_tokens") == ["maa", "ilm"] for row in morph))
-check(
-    "ambiguity surfaced via analyses_count + is_ambiguous fields",
-    all("analyses_count" in row and "is_ambiguous" in row for row in morph),
-)
+by_word = {row["word"]: row for row in morph}
+check("compound 'maailm' splits", by_word.get("maailm", {}).get("root_tokens") == ["maa", "ilm"], str(morph))
+check("a one-part root has no root_tokens", "root_tokens" not in by_word.get("Tere", {"root_tokens": 0}),
+      str(by_word.get("Tere")))
+check("'!' is omitted", list(by_word) == ["Tere", "maailm"], str(morph))
+check("form_estonian only where the form has a name",
+      by_word["maailm"].get("form_estonian") == "ainsuse nimetav"
+      and "form_estonian" not in by_word["Tere"] and by_word["Tere"]["form"] == "", str(morph))
+amb = {row["word"]: row.get("analyses_count", 1) for row in server.analyze_morphology("Ta on kodus.")}
+check("analyses_count only on ambiguous words, no is_ambiguous",
+      amb.get("on", 0) > 1 and amb.get("kodus") == 1
+      and not any("is_ambiguous" in row for row in morph), str(amb))
+both = server.analyze_morphology("Ta on kodus.", all_analyses=True)
+check("all_analyses carries no analyses_count",
+      not any("analyses_count" in row or "is_ambiguous" in row for row in both)
+      and len(next(row for row in both if row["word"] == "on")["analyses"]) > 1, str(both))
+clit = {row["word"]: row.get("clitic") for row in server.analyze_morphology("Kas sinagi tuled?")}
+check("clitic only where there is one", clit == {"Kas": None, "sinagi": "gi", "tuled": None}, str(clit))
+plehku = next((row for row in server.analyze_morphology("Ta pani plehku.") if row["word"] == "plehku"), {})
+check("'plehku' is X and not flagged foreign",
+      plehku.get("partofspeech") == "X" and "usage_note" not in plehku
+      and "usage_note_estonian" not in plehku, str(plehku))
+
+
+def _empty_values(node, key=""):
+    """Every (key, value) in the output that is None or False, or "" or []
+    outside `form`, which is "" for every uninflected word."""
+    if isinstance(node, list):
+        if not node and key != "form":
+            return [(key, node)]
+        return [hit for item in node for hit in _empty_values(item, key)]
+    if isinstance(node, dict):
+        return [hit for k, v in node.items() for hit in _empty_values(v, k)]
+    if node is None or node is False or (node == "" and key != "form"):
+        return [(key, node)]
+    return []
+
+
+probe = ("Tere maailm! Kas sinagi tuled? Ta pani plehku. Ma ei tea. Okei, tarvitan "
+         "täis pudelit ja tuntud laulja. § 2 lõige 3, :) Riigid on suured.")
+for mode in (False, True):
+    empty = _empty_values(server.analyze_morphology(probe, all_analyses=mode))
+    check(f"no null, false or empty value (all_analyses={mode})", not empty, str(empty[:5]))
 # indeclinable flag: lexical indeclinable + -tud/-nud participle = True,
-# normal declinable adjective = False.
+# normal declinable adjective = absent.
 r = server.analyze_morphology("täis pudel tuntud laulja kollane lill")
-flags = {row["word"]: row.get("indeclinable") for row in r}
+flags = {row["word"]: row.get("indeclinable", False) for row in r}
 check("'täis' flagged indeclinable", flags.get("täis") is True, str(flags))
 check("'tuntud' (-tud participle) flagged indeclinable", flags.get("tuntud") is True, str(flags))
 check("'kollane' NOT indeclinable", flags.get("kollane") is False, str(flags))
+check("indeclinable present only as true",
+      all(row.get("indeclinable", True) is True for row in r)
+      and "indeclinable" not in next(row for row in r if row["word"] == "kollane"), str(r))
+check("no usage notes on a neutral word",
+      not any("usage_note" in row or "usage_note_estonian" in row for row in r), str(r))
 # Marked-usage lexicon: 'tarvitama' should be tagged archaic.
 r = server.analyze_morphology("Ma tarvitan programmi.")
 tarv = next((row for row in r if row.get("lemma") == "tarvitama"), None)
@@ -109,8 +164,17 @@ print("spell_check")
 sp = server.spell_check(SAMPLE)
 bad = [row for row in sp if not row["spelling"]]
 check("flags 'sõinn' as misspelled", any(row["text"] == "sõinn" for row in bad))
-suggestions = next((row["suggestions"] for row in bad if row["text"] == "sõinn"), [])
+suggestions = next((row.get("suggestions", []) for row in bad if row["text"] == "sõinn"), [])
 check("suggests 'sõin'", "sõin" in suggestions, str(suggestions))
+check("lists only the misspelled tokens", [row["text"] for row in sp] == ["sõinn"]
+      and all(row["spelling"] is False for row in sp), str(sp))
+check("clean text gives an empty list", server.spell_check("Tere maailm.") == [],
+      str(server.spell_check("Tere maailm.")))
+twice = server.spell_check("sõinn ja sõinn")
+check("each occurrence is listed", [row["text"] for row in twice] == ["sõinn", "sõinn"], str(twice))
+check("no suggestions key when there are none",
+      server.spell_check("sõinn", suggestions=False) == [{"text": "sõinn", "spelling": False}],
+      str(server.spell_check("sõinn", suggestions=False)))
 
 print("syllabify")
 syl = server.syllabify("hommikul")
