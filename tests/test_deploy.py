@@ -333,6 +333,13 @@ def compose_is_pinned_and_bounded() -> None:
     if nginx_from:
         check("and it is a stable branch, not mainline", int(nginx_from.group(2)) % 2 == 0,
               f"1.{nginx_from.group(2)} is odd, so it is mainline")
+    # Those base tags float at patch level, which only helps if a rebuild
+    # fetches them: without pull, `docker compose up -d --build` reuses
+    # the copy the host cached on its first build, months of CVEs ago.
+    builds = re.findall(r"^    build:\n((?:      .*\n)+)", COMPOSE_CODE, re.M)
+    check("both services that build say how", len(builds) == 2, str(builds))
+    check("and each build pulls its base image",
+          all(re.search(r"^      pull: true$", b, re.M) for b in builds), str(builds))
     check("log files are capped", 'max-size: "10m"' in COMPOSE and 'max-file: "3"' in COMPOSE)
     body = re.search(r"^services:\n(.*?)(?=^\w)", COMPOSE_CODE, re.S | re.M)
     check("a services block exists", body is not None)

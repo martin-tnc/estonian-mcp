@@ -7,6 +7,41 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-22
+
+Python 3.10 is no longer supported, hence the minor version. No tool,
+argument or output changes.
+
+### Removed
+
+- **Python 3.10.** `requires-python` is now `>=3.11,<3.14`. Pillow
+  arrives under `matplotlib` -> `estnltk`, and 13.0.0 is the first
+  release with the fixes for 38 open advisories (4 critical, among them
+  GHSA-v9pv-5gc8-w2m6, multi-frame loaders reusing stale native image
+  storage, and the Ghostscript argument injection); it needs Python
+  3.11, and no 12.x release carries them. 0.8.0 moved Python 3.11 to
+  3.13 onto 13.0.0 but left 3.10 installs on 12.3.0, so a 3.10 install
+  still got every one of them. Python 3.10 itself reaches end of life
+  this month. The container image (Python 3.13), the hosted service and
+  CI (3.11 and 3.13) were already on 13.0.0 and do not change. The lock
+  drops its 3.10-only entries (Pillow 12.3.0, numpy 2.2.6, pandas 2.3.3,
+  scipy 1.15.3, scikit-learn 1.7.2 and five more); nothing on 3.11 to
+  3.13 moves.
+
+### Security
+
+- **The self-host stack now picks up nginx and Python security fixes on
+  a rebuild.** `deploy/nginx/Dockerfile` follows `nginx:1.30-alpine`,
+  which floats at patch level and is nginx 1.30.6 today (14 October,
+  five CVEs, among them CVE-2026-93479, a buffer overflow in script
+  evaluation; the template leans on variables throughout). But
+  `docker compose up -d --build` reused the base image cached on the
+  host at its first build, so a stack first built in August kept 1.30.4
+  through every rebuild unless its image cache was cleared. Both builds in `docker-compose.yaml` now
+  set `pull: true`, `deploy/README.md` section 4.6 gives the update
+  procedure, and `tests/test_deploy.py` holds the rule. A stack built
+  before today needs one `git pull && docker compose up -d --build`.
+
 ## [0.8.2] - 2026-10-22
 
 ### Fixed

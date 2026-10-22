@@ -268,7 +268,7 @@ server {
     # Raising this to `error` while debugging is fine and sometimes
     # necessary; just know that it starts recording query strings. The
     # OAuth failure reasons that used to live here are in the access
-    # log's diag= field instead (deploy/README.md section 11.1).
+    # log's diag= field instead (deploy/README.md section 12.1).
     error_log /dev/stderr crit;
 
     ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;

@@ -5,6 +5,9 @@
 #   ./deploy/init-letsencrypt.sh
 #   docker compose up -d
 #
+# Security updates (deploy/README.md section 4.6):
+#   git pull && docker compose up -d --build
+#
 # See deploy/README.md for token management and troubleshooting.
 
 name: estonian-mcp
@@ -21,7 +24,14 @@ x-logging: &logging
 
 services:
   app:
-    build: .
+    # pull: a build fetches the current image behind each FROM tag,
+    # here and in the nginx build below, instead of reusing the copy
+    # cached on this host. Those tags move when the publisher ships a
+    # security fix, and without this a rebuild would silently keep the
+    # old one.
+    build:
+      context: .
+      pull: true
     restart: unless-stopped
     logging: *logging
     environment:
@@ -63,6 +73,7 @@ services:
   nginx:
     build:
       context: ./deploy/nginx
+      pull: true
     restart: unless-stopped
     logging: *logging
     # Start order only, deliberately not `condition: service_healthy`.

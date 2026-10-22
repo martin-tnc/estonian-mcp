@@ -213,6 +213,44 @@ to 1. The default is 0.6.
 > **CAUTION: Each client that can call the server can read the
 > glossary. Do not put confidential names in these files.**
 
+### 4.6 Security updates
+
+The `app` and `nginx` images are built on your host. Each build starts
+from a base image. The `FROM` lines in `Dockerfile` and
+`deploy/nginx/Dockerfile` give the tags of these images. These tags
+move. The publisher puts a new image behind the tag for each patch
+release and each security fix. Your images do not change until you
+build them again.
+
+The compose file sets `pull: true` for the two builds. Thus each build
+gets the current base image. The `certbot` image has a fixed version in
+the compose file. A new version comes with `git pull`.
+
+1. Get the current version of this repository:
+
+   ```sh
+   git pull
+   ```
+
+2. Build the images again and replace the containers:
+
+   ```sh
+   docker compose up -d --build
+   ```
+
+3. Make sure that nginx has the new version:
+
+   ```sh
+   docker compose exec nginx nginx -v
+   ```
+
+Do this procedure one time each month. Also do it when nginx publishes
+a [security advisory](https://nginx.org/en/security_advisories.html)
+for the branch in `deploy/nginx/Dockerfile`.
+
+> **CAUTION: `docker compose up -d` without `--build` does not build.
+> It starts the images that you have, and these can be months old.**
+
 ## 5 Ports and local tests
 
 ### 5.1 Ports

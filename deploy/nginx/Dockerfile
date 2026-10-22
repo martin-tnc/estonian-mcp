@@ -14,8 +14,12 @@
 # This container terminates TLS and holds every client's token, so it
 # tracks stable.
 #
-# The tag floats at patch level, so patch fixes arrive on a rebuild with
-# nobody doing anything. What Dependabot can offer here is the next
+# The tag floats at patch level, so patch fixes arrive on the next
+# `docker compose up -d --build`: the compose file sets `pull: true`, so
+# the build fetches the current image for the tag rather than the copy
+# cached on the host (deploy/README.md section 4.6). A plain
+# `docker build` without --pull still reuses the cached one.
+# What Dependabot can offer here is the next
 # MINOR: take it when it is even (1.32), decline it when it is odd
 # (1.31). Do not sit on an out-of-support branch either, because those
 # stop getting security fixes and the image starts accumulating CVEs.

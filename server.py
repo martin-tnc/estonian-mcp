@@ -91,7 +91,7 @@ DEFAULT_STATIC_RATE_LIMIT_PER_MINUTE = 60
 _TRUSTED_PROXY_HOPS = max(0, int(os.environ.get("ESTNLTK_MCP_TRUSTED_PROXY_HOPS", "1")))
 
 # Bumped manually in lockstep with pyproject.toml's [project].version.
-SERVER_VERSION = "0.8.2"
+SERVER_VERSION = "0.9.0"
 
 # Favicons served alongside the MCP endpoint so Google's favicon service
 # (used by the Anthropic Connectors Directory + tool-call UI in Claude)
@@ -243,7 +243,7 @@ _LIST_ITEM = re.compile(r"^(?:[-*•]|\d+[.)])\s")
 
 def _reflow(doc: str) -> str:
     """A docstring as the client should get it: dedented (Python 3.13 does
-    that to __doc__, 3.10 to 3.12 do not), with each paragraph and list item
+    that to __doc__, 3.11 and 3.12 do not), with each paragraph and list item
     on one line. Hard wrapping at 72 columns costs about 5% more tokens and
     tells the model nothing."""
     paragraphs = []

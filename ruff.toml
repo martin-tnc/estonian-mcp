@@ -12,7 +12,7 @@
 #   E402 in tests/ — every test file inserts the repo root on sys.path
 #   before `import server`, which necessarily puts an import after code.
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 
 [lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4", "RUF"]
