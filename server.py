@@ -3314,20 +3314,23 @@ def check_hyphenation(word: Annotated[str, Field(description="One Estonian word,
 #   the same.
 # Skipped unless a unit, currency, per cent or multiplier follows (1.10
 # punkti, 2.5 korda, 1.25-1.50 eurot) or a currency precedes (€14.05):
-# - a time after kell or kl (kell 10.20);
+# - a time after a form of kell (kell, kella, kellaajal; not kelle, of kes)
+#   or kl (kell 10.20);
 # - a time range, both ends, the right one later (10.30-12.00; a confidence
 #   interval 1.05-1.20 too);
 # - a section or version number after its word: §, p, lg, ptk, nr, v, ver,
 #   also inflected (p-s, lg-s), or punkt, lõige, peatükk, jaotis, tabel,
-#   joonis, versioon, paragrahv, artikkel in any form, and lisa lowercase
-#   only (Lisa is mostly the imperative);
+#   joonis, versioon, paragrahv, artikkel in any form, and lisa as written
+#   (Lisa is mostly the imperative, lisas mostly the past tense);
 # - a date, day 1-31 and a two-digit month (14.05, 1.05; 2.05 ja too);
 # - before a sentence end, where numbers were never flagged before, the
 #   shape of a time (väljub 6.55., ajaga 32.15.) or a word with a capital
-#   before the number (iOS 17.2., Narvas 5.1.); so Pi on 3.14. is missed;
+#   before the number (iOS 17.2., Android 4.4.); so Pi on 3.14. and Narvas
+#   5.1. are missed;
 # - a version after a product name: a capitalised word mid-sentence, not
 #   all capitals (BMI 31.2 is a measure), that Vabamorf's lexicon does not
-#   know (Python 3.12, not Tartus 8.7).
+#   know (Python 3.12, not Tartus 8.7). A lookup can take 2 ms, so a text
+#   gets _NUM_LOOKUPS of them; past that a name is read as known.
 # A bare time (algab 10.30) is flagged: only kell tells it from a decimal.
 _NUM_DECIMAL_RE = re.compile(
     r"(?<![\d.])(\d+)\.(\d+)(?!\d)(?!\.(?!\s*\Z|\s+[^\s\da-zõäöüšž]))")
@@ -3337,29 +3340,36 @@ _NUM_OPENERS = "([{«\"„“'"
 _NUM_CASE_END_RE = re.compile(r"(?<=.)-[a-zõäöüšž]{1,5}\Z")
 _NUM_UNIT_RE = re.compile(
     r"[^\S\n]?(?:[%€]|(?:EUR|USD|CHF|SEK|GBP|kg|g|mg|t|km|m|cm|mm|l|ml|dl|s|ms"
-    r"|min|h|V|A|W|kW|Hz|kHz|MHz|GHz|bar|kPa|tl|sl|kl|korda)(?![^\W\d_])"
+    r"|min|h|V|A|W|kW|Hz|kHz|MHz|GHz|bar|kPa|tl|sl|kl|korda)(?![^\W\d_²³])"
     r"|protsent|eur|miljon|miljard|tuhat|meetr|kilo|liitr|tonn|sekund|minut"
     r"|tund|punkt)")
 _NUM_CURRENCY_RE = re.compile(r"(?:€|(?<![^\W\d_])(?:EUR|USD|CHF|SEK|GBP))[^\S\n]?\Z")
 _NUM_RANGE_GAP_RE = re.compile(r"[^\S\n]*[-\u2013][^\S\n]*")
 _NUM_NEXT_LETTER_RE = re.compile(r"[^\S\n]+([^\W\d_])")
-_NUM_SENTENCE_START_RE = re.compile(r"(?:\A|\n|[.!?…][\"'”»)\]]*\s)[\s\"'„“«(\[#>*•-]*\Z")
-_NUM_KELL_RE = re.compile(r"kell\w*|kl\.?")
+_NUM_SENTENCE_START_RE = re.compile(r"(?:\A|\n|[.!?…][\"'“”»)\]]*\s)[\s\"'„“«(\[#>*•-]*\Z")
+_NUM_KELL_RE = re.compile(r"kell(?:a\w*)?|kl\.?")
 _NUM_SECTION_RE = re.compile(
-    r"(?:§|p|lg|ptk|nr|v|ver)\.?|lisa(?:s|st)?|(?:punkt|lõige|lõike|peatük"
+    r"(?:§|p|lg|ptk|nr|v|ver)\.?|(?:punkt|lõige|lõike|peatük"
     r"|jaotis|tabel|joonis|versioon|paragrahv|artikl|artikkel)\w*")
 
 
-@lru_cache(maxsize=4096)
-def _number_word_known(word: str) -> bool:
+_NUM_LOOKUPS = 128
+
+
+def _number_word_known(word: str, known: dict[str, bool]) -> bool:
     """Whether Vabamorf's lexicon knows `word`, without guessing: Tartus
-    yes, Python no. True when Vabamorf fails, so the number is flagged."""
-    try:
-        found = _vabamorf().analyze(
-            words=[word], guess=False, propername=False, disambiguate=False)
-    except Exception:
-        return True
-    return any(w["analysis"] for w in found)
+    yes, Python no. `known` holds this text's lookups. True when Vabamorf
+    fails or the text has used its lookups, so the number is flagged."""
+    if word not in known:
+        if len(known) >= _NUM_LOOKUPS:
+            return True
+        try:
+            found = _vabamorf().analyze(
+                words=[word], guess=False, propername=False, disambiguate=False)
+            known[word] = any(w["analysis"] for w in found)
+        except Exception:
+            known[word] = True
+    return known[word]
 
 
 def _number_before(text: str, start: int) -> tuple[str, str, int]:
@@ -3396,7 +3406,7 @@ def _clock_minutes(m: re.Match) -> int | None:
     return None
 
 
-def _decimal_skipped(text: str, cands: list[re.Match], i: int) -> bool:
+def _decimal_skipped(text: str, cands: list[re.Match], i: int, known: dict[str, bool]) -> bool:
     """True when candidate `i` is no English decimal, by the rules above."""
     m = cands[i]
     whole, frac = m.groups()
@@ -3417,25 +3427,24 @@ def _decimal_skipped(text: str, cands: list[re.Match], i: int) -> bool:
     left = cands[i - 1] if i and _NUM_RANGE_GAP_RE.fullmatch(text, cands[i - 1].end(), start) else None
     right = (cands[i + 1] if i + 1 < len(cands)
              and _NUM_RANGE_GAP_RE.fullmatch(text, end, cands[i + 1].start()) else None)
+    if any(_NUM_UNIT_RE.match(text, c.end())
+           or _NUM_CURRENCY_RE.search(text, max(0, c.start() - 5), c.start())
+           for c in (left, m, right) if c):
+        return False
     low = word.lower()
     here = _clock_minutes(m)
     before = _clock_minutes(left) if left and here is not None else None
     later = _clock_minutes(right) if right and here is not None else None
     short = len(whole) <= 2 and len(frac) == 2
-    skip = (
+    return (
         _NUM_KELL_RE.fullmatch(low) is not None
         or (before is not None and before < here) or (later is not None and here < later)
-        or (_NUM_SECTION_RE.fullmatch(low) is not None
-            and not (low.startswith("lisa") and word[0].isupper()))
+        or _NUM_SECTION_RE.fullmatch(low) is not None or word == "lisa"
         or (short and 1 <= int(whole) <= 31 and 1 <= int(frac) <= 12)  # a date
         or (final and (word != low or (short and int(whole) <= 59 and int(frac) <= 59)))
         or (word[:1].isupper() and not word.isupper() and word[-1].isalnum()  # a product
             and not _NUM_SENTENCE_START_RE.search(text, max(0, word_start - 20), word_start)
-            and not _number_word_known(word)))
-    return skip and not any(
-        _NUM_UNIT_RE.match(text, c.end())
-        or _NUM_CURRENCY_RE.search(text, max(0, c.start() - 5), c.start())
-        for c in (left, m, right) if c)
+            and not _number_word_known(word, known)))
 
 
 def _check_numbers(text: str) -> dict:
@@ -3460,9 +3469,10 @@ def _check_numbers(text: str) -> dict:
         })
 
     cands = list(_NUM_DECIMAL_RE.finditer(text))
+    known: dict[str, bool] = {}
     for i, m in enumerate(cands):
         # 000.50 of 1,500,000.50 is part of the thousands issue.
-        if m.end() in with_decimals or _decimal_skipped(text, cands, i):
+        if m.end() in with_decimals or _decimal_skipped(text, cands, i, known):
             continue
         issues.append({
             "text": m.group(0),

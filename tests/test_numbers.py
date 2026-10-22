@@ -87,6 +87,9 @@ def kell() -> None:
                   "kellaajal 10.20", "kl 9.20", "kl. 9.20"])
     # Only the word right before counts: kell the watch is no cue.
     expect_decimals({
+        # kelle (whose) is a form of kes.
+        "Isik, kelle 2.5 aastane karistus lõppes, vabanes.": ["2.5"],
+        "Kelle 2.5 pakki jäi alles?": ["2.5"],
         "Kella aku kestab 2.5 päeva.": ["2.5"],
         "Uus kell on 2.5 korda kallim.": ["2.5"],
         "Kellad maksavad 49.90 kuni 99.90.": ["49.90", "99.90"],
@@ -116,7 +119,7 @@ def section_words() -> None:
         "punkt 3.2", "§ 3.2", "Sätestatud §3.7 alusel.", "lõige 2.1", "lõikes 2.7",
         "peatükk 4.3", "peatükis 4.7", "jaotises 3.7", "tabel 2.1", "Tabel 2.7: Tulemused",
         "joonisel 3.4", "versioonis 2.7", "Versioon: 2.7", "paragrahvi 3.7",
-        "artikli 3.7", "lisa 1.2", "lisas 1.7", "(punkt 3.7)", "lepingu punkti 3.7 alusel",
+        "artikli 3.7", "lisa 1.2", "(punkt 3.7)", "lepingu punkti 3.7 alusel",
         "lg 2.7", "lg. 2.7", "p. 3.7", "ptk 4.7", "nr 3.7", "v 2.7", "ver 2.7",
         # Inflected abbreviations.
         "Vastavalt lepingu p-s 5.3 sätestatule on tellijal õigus leping üles öelda.",
@@ -124,9 +127,17 @@ def section_words() -> None:
         "Töövõtja vastutab ptk-s 4.2 kirjeldatud kohustuste eest.",
         "Vt lepingu p-le 4.3 lisatud tingimusi.", "§-s 3.2",
     ])
+    # Limits: lowercase lisa is an imperative too, and a word that merely
+    # starts with a section word is a cue (punkte, joonistasin).
+    expect_clean(["Tainale lisa 0.5 pakki pärmi.", "Ta sai punkte 8.5 ja võitis.",
+                  "Joonistasin 2.5 tunniga pildi."])
     expect_decimals({
-        # Lisa capitalised is the imperative "add".
+        # Only lisa as written: Lisa is mostly the imperative "add", lisas
+        # the past tense "added".
         "Lisa 2.5 pakki võid ja sega.": ["2.5"],
+        "Ringkonnakohus lisas 1.5 aastat vangistust.": ["1.5"],
+        "Kokk lisas 1.5 tassi suhkrut.": ["1.5"],
+        "lisas 1.7": ["1.7"],
         "Lisa 0.5 pakki pärmi ja 1.5 klaasi sooja piima.": ["0.5", "1.5"],
         # A unit beats a section word: lowercase lisa is an imperative too.
         "Sega ja lisa 0.5 tl soola.": ["0.5"],
@@ -159,6 +170,9 @@ def product_names() -> None:
         "Python 3.7 on kiire.": ["3.7"],
         "Tulemus 3.7 on hea.": ["3.7"],
         "Ta ütles: „Kõik on hästi.” Keskmine 3.67 jäi siiski alla ootuste.": ["3.67"],
+        "Analüütik ütles: „Turud olid punases.“ Nasdaq 2.1 ja S&P 1.8 protsendiga miinuses.":
+            ["2.1", "1.8"],
+        "„Kas turud langevad?“ Nasdaq 2.1 langes.": ["2.1"],
         # All capitals is a measure or a label more often than a product.
         "Patsiendi BMI 31.2 viitab rasvumisele.": ["31.2"],
         "Mudeli AUC 0.87 oli parim.": ["0.87"],
@@ -248,6 +262,13 @@ def units() -> None:
         "Lisa 0.5 tl soola ja 1.5 sl suhkrut.": ["0.5", "1.5"],
         "Lisa 0.5 kl suhkrut.": ["0.5"],
         "Lisa 1.5 küüslauguküünt ja 0.25 tl pipart.": ["1.5", "0.25"],
+        # A squared or cubed unit is the unit.
+        "Rõdu pindala on 4.08 m² ja see on klaasitud.": ["4.08"],
+        "Veekulu oli eelmisel kuul 3.12 m³.": ["3.12"],
+        "Maatüki suurus on 1.12 km².": ["1.12"],
+        "Ristlõige 2.05 mm² on liiga väike.": ["2.05"],
+        "Toa pindala on 10.12 m², köögil 7.5 m².": ["10.12", "7.5"],
+        "Pindala 4.08 m2.": ["4.08"],
     })
 
 
@@ -262,17 +283,26 @@ def sentence_ends() -> None:
         "Hind on €12.50.": ["12.50"],
         "Pi on 3.14!": ["3.14"],
     })
-    # Where 0.8.0 flagged nothing, a time's shape or a capital stays clean.
+    # Where 0.8.0 flagged nothing, a time's shape or a word with a capital
+    # stays clean: the product rule misses iOS (lowercase) and Android (in
+    # the lexicon), and they would be new false hits.
     expect_clean(["Ööbuss väljub 00.30.", "Kell on kolmveerand üks öösel ehk 00.45.",
                   "Lend AY1022 väljub 6.55.", "Ta lõpetas 10 km ajaga 32.15.",
                   "Ta lõpetas ajaga 2:08.24.", "Seade uuendati tarkvaraversioonile 2.17.",
-                  "Telefonis on iOS 17.2.", "Kasutame Android 4.4.",
-                  # Limit: pi to two places has a time's shape.
-                  "Pi on 3.14."])
+                  "punktid 4.13., 4.14. ja 4.15.", "Telefonis on iOS 17.2.",
+                  "Kasutame Android 4.4.", "Kasutame USB 3.0.",
+                  # Limits: pi to two places has a time's shape, Narvas a capital.
+                  "Pi on 3.14.", "Patsiendi BMI 31.2."])
     expect_decimals({
         "Etendus algab 19.10 ja lõpeb 21.40.": [],
         "Buss väljub peatusest 8.47 ja jõuab kohale 9.22.": ["8.47"],
         "Sademeid oli Pärnus 12.3, Tartus 8.7 ja Narvas 5.1.": ["12.3", "8.7"],
+        "Töötuse määr oli Eestis 6.4 ja Soomes 7.8.": ["6.4"],
+        # Limits, where 0.8.0 flagged nothing: a date with a one-digit
+        # month, a version after a verb, a clause number inside a line.
+        "Tähtaeg on 1.9.": ["1.9"],
+        "Uus versioon on 3.2.": ["3.2"],
+        "Lepingu punktid: 4.1. Tellija tasub arve. 4.2. Töövõtja annab töö üle.": ["4.2"],
     })
 
 
@@ -314,13 +344,38 @@ def issue_shape() -> None:
 
 def linear_time() -> None:
     print("linear time on 100,000 characters")
-    for unit in ("1.5-", f"3.7 {EN_DASH} ", "10.20-", "ja Xyz 1.5 ", "4.13. Tellija\n"):
-        text = (unit * (100_000 // len(unit) + 1))[:100_000]
+    texts = {f"{unit!r} repeated": (unit * (100_000 // len(unit) + 1))[:100_000]
+             for unit in ("1.5-", f"3.7 {EN_DASH} ", "10.20-", "ja Xyz 1.5 ",
+                          "4.13. Tellija\n", "kell 10.20-12.30 ", "€14.05 ")}
+    # Each new capitalised word costs a lexicon lookup, up to 2 ms for a
+    # long compound, so a text gets _NUM_LOOKUPS of them.
+    roots = ["maja", "kooli", "aia", "puu", "kivi", "vee", "tee", "linna", "metsa", "auto",
+             "raamatu", "laua", "töö", "ilma", "maa", "kala", "lille", "saare", "ase", "osa"]
+    words = ("".join(roots[(n * 7919 // 20 ** k) % 20] for k in range(8)).capitalize()
+             for n in range(3000))
+    unique = "".join(f"ja {w} 1.5 " for w in words)[:100_000]
+    texts["unique long compounds"] = unique
+    real, calls = server._vabamorf, []
+
+    class Counting:
+        def analyze(self, **kwargs):
+            calls.append(kwargs["words"])
+            return real().analyze(**kwargs)
+
+    server._vabamorf = Counting
+    try:
+        server.check_numbers(unique)
+    finally:
+        server._vabamorf = real
+    check(f"{len(calls)} lexicon lookups for {unique.count(' 1.5 ')} new words",
+          0 < len(calls) <= server._NUM_LOOKUPS, str(len(calls)))
+    for label, text in texts.items():
         t = time.perf_counter()
         server.check_numbers(text)
         dt = time.perf_counter() - t
-        # 0.8.0 took 0.15 s; a quadratic walk took 30 to 65 s.
-        check(f"{unit!r} repeated: {dt:.2f} s", dt < 5, f"{dt:.2f} s")
+        # 0.8.0 took 0.15 s; a quadratic walk took 30 to 65 s, a lookup
+        # per word 2 to 5 s. Locally the worst is 0.25 s.
+        check(f"{label}: {dt:.2f} s", dt < 2, f"{dt:.2f} s")
 
 
 thousands()
