@@ -25,26 +25,26 @@ The hard rule, applied throughout this skill:
 | --- | --- |
 | `spell_check` | First pass on any Estonian text the user wrote. Cheapest validation. |
 | `lemmatize` | Get dictionary forms: for vocabulary study, deduping word stems, citation. |
-| `analyze_morphology` | Full analysis with case form, root, ending, compound parts, ambiguity count, and a usage flag (`archaic` / `foreign` / `interjection` / `abbreviation` / `proper-noun`). The authoritative tool when discussing grammar. |
+| `analyze_morphology` | Full analysis with case form, root and ending, plus, where they apply, compound parts, an ambiguity count, an `indeclinable` flag and a usage flag (`archaic` / `foreign` / `interjection` / `abbreviation` / `proper-noun`). The authoritative tool when discussing grammar. |
 | `paradigm` | Generates the full inflection paradigm for a word: all 14 cases for nouns plus the short illative where a word has one (majja beside majasse), ~39 forms for verbs. Use when the user asks "what's the X-case of Y" or wants to see every form. Don't try to recall paradigms from memory. |
 | `pos_tag` | When you only need POS, e.g., filtering a list to nouns. |
 | `tokenize` | Sentence + word boundaries. Useful before per-sentence operations. |
 | `synonyms` | Same-meaning alternatives via Estonian WordNet. Returns synsets grouped by sense. |
 | `find_related_words` | Semantically nearby words via fastText. Broader than synonyms: includes near-synonyms, related concepts, and (sometimes) antonyms. |
 | `classify_register` | Heuristic formal/colloquial score with markers + `consistency.is_mixed` flag for register-mixed text (formal + colloquial markers in the same draft = jarring). |
-| `check_style` | Four style metrics in one call: lemma-aware repetition (catches 'kasutab' / 'kasutamine' both under lemma 'kasutama'), Estonian passive-voice ratio (-takse/-ti/-tud family), sentence-length mean+stddev, hedging-word density. Use for newsletter / ad / email polish. |
+| `check_style` | Four style metrics in one call: lemma-aware repetition (catches 'kasutab' / 'kasutas' both under lemma 'kasutama'), Estonian passive-voice ratio (-takse/-ti/-tud family), sentence-length mean+stddev, hedging-word density. Use for newsletter / ad / email polish. |
 | `check_redundancy` | Pleonasm / semantic-doubling check: flags `samuti ka` (also+also), `kõige optimaalsem` (most+optimal), and fixed redundant phrases. Run it before claiming a redundancy "the MCP can't catch": it catches the common ones. |
-| `check_object_case` | Käändeõpetus heuristic. Catches the most common confidently-wrong Estonian: direct-object case after negation (must be partitive) and after partitive-only verbs (`armastama`, `vihkama`, `vajama`, …). Lexicon-based, no syntactic parser; only flags nouns AFTER the trigger so subject-noun false positives are minimal. |
-| `check_abbreviation_hyphenation` | Lühendiortograafia: flags abbreviations carrying a case ending without the EKI-mandated hyphen (`MCPst` → `MCP-st`, `OÜle` → `OÜ-le`, `APIga` → `API-ga`). Uses Vabamorf's POS+form analysis to filter to actual abbreviations. |
+| `check_object_case` | Käändeõpetus heuristic. Catches the most common confidently-wrong Estonian: direct-object case after negation (must be partitive) and after partitive-only verbs (`armastama`, `vihkama`, `vajama`, …). Lexicon-based, no syntactic parser; only flags nouns AFTER the trigger so subject-noun false positives are minimal. An issue gives the noun's `lemma` and `form`, not a correction: take the partitive in the number `form` shows from `paradigm`. A negated sentence containing `olema` (`pole näinud`) is not checked for negation. |
+| `check_abbreviation_hyphenation` | Lühendiortograafia: flags abbreviations carrying a case ending without the EKI-mandated hyphen (`MCPst` → `MCP-st`, `OÜle` → `OÜ-le`, `APIga` → `API-ga`). Any all-capital stem is checked, known or not; a mixed-case one (`SaaSi`, `PhDga`) is not, and an English plural (`APIs`) can be flagged as a case ending. |
 | `check_compound_familiarity` | Attestation check for each compound noun: is the lemma in the fastText corpus vocabulary (`in_vocab`), in Estonian WordNet (`in_wordnet`), or a legal term of art? **Read `attested` first, and read `attested: false` for what it is**: outside a 100K-word vocabulary, which is the normal state for correct specialist vocabulary. `lisakäive`, `klikkimismäär`, `koolitoit`, `rehvivahetus` are all unattested here and all ordinary Estonian, so unattested is NEVER on its own a reason to rewrite. `is_suspect` is narrow: unattested AND the nearest neighbour is a real word AND that similarity is still under 0.55 (`mõtteliin`, 0.536). Recall is low on purpose: a coinage scoring inside the band real vocabulary occupies is missed rather than bought at the price of flagging good Estonian, so `toortõlkeoht` (0.571) passes. `neighbour_quality.signal: none` means the nearest neighbour is a scrape-artifact token, the score means nothing, and no verdict is offered. Note the other limit too: a compound that is merely *stilted* rather than invented (`teadusandmestik`) passes, because similarity can't judge register, so use `check_officialese` for that. Run on any Estonian compound you yourself produced (rather than verbatim user input). |
-| `check_domain_terms` | For Estonian written about an organisation's own systems. Reports the compounds that are unattested AND not on the organisation's glossary or identifier list. That says only that the word is not the organisation's: it may be a name you coined, or ordinary Estonian the lexicons lack (`vagunisõit` is common). Where it names something the organisation has a word for, or something with an identifier, use theirs. Each comes with up to three glossary terms **spelled alike**: look-alikes, not synonyms, so replace the compound only when a suggestion names the same thing. `contains_glossary_term` marks a compound built on a glossary term (`vagunireisitabel` on `vagunireis`), which is ordinary Estonian and must not be shortened to the term. The hosted server has no glossary of its own, so pass the organisation's terms in `glossary` (up to 1,000). With no glossary at all it is only the unattested list, which is never on its own a reason to rewrite. |
+| `check_domain_terms` | For Estonian written about an organisation's own systems. Reports the compounds that are unattested AND not on the organisation's glossary or identifier list. That says only that the word is not the organisation's: it may be a name you coined, or ordinary Estonian the lexicons lack (`vagunisõit` is common). Where it names something the organisation has a word for, or something with an identifier, use theirs. When there are glossary terms, each comes with up to three of them **spelled alike** (`suggestions`): look-alikes, not synonyms, so replace the compound only when a suggestion names the same thing. `contains_glossary_term` marks a compound built on a glossary term (`vagunireisitabel` on `vagunireis`), which is ordinary Estonian and must not be shortened to the term. The hosted server has no glossary of its own, so pass the organisation's terms in `glossary` (up to 1,000). With no glossary at all it is only the unattested list, which is never on its own a reason to rewrite. |
 | `check_officialese` | Kantseliit check for **non-legal** prose: reports, academic writing, business copy, grant/R&D paperwork. Use this, not `check_legalese`, for anything that isn't a statute or contract: `check_legalese`'s lexicon and 34-word gate are tuned for legislation and return nothing on report officialese. Gives nominalisation density with the verb to swap in (`hindamine` → `hindama`), correctly-counted umbisikuline tegumood, clause stacking, Estonian-calibrated sentence length, and admin filler. |
 | `check_term_consistency` | One referent, one term. Run on any document longer than a couple of paragraphs: catches `andmestik` in §1, `teadusandmestik` in §2, `pildiandmestik` in §3. Reports per-variant counts so you can standardise on the dominant one. Pass the organisation's terms in `glossary` when you have them (up to 1,000; the hosted server has none of its own): when exactly one variant in a group is listed, the group names it `preferred`, so standardise on `preferred` when present and otherwise on `dominant`. Read each group before rewriting: some are genuinely distinct concepts. |
-| `check_capitalization` | Algustäheortograafia (initial-letter orthography) check per EKI Reeglid. Flags weekdays, months, nationalities, and language/culture adjectives wrongly capitalized mid-sentence. Run on every Estonian text you produce. |
+| `check_capitalization` | Algustäheortograafia (initial-letter orthography) check per EKI Reeglid. Flags weekdays, months, nationalities, and language/culture adjectives wrongly capitalized mid-sentence. A hit at the start of a line, list item or quotation, or inside a proper name (`Eesti Keele Instituut`), is usually false. Run on every Estonian text you produce. |
 | `check_compounds` | Liitsõnaõigekiri: flags common compound splits the model produces (`kooli maja` → `koolimaja`). Lexicon-based, phase 1. |
-| `check_punctuation` | Kirjavahemärgid: flags missing commas before subordinating conjunctions (et, sest, kuna, kuid, vaid, nagu, …). Phase-1 scope: the comma-before-clause rule only. |
-| `check_hyphenation` | Poolitamine: returns safe line-break positions for a word. Use only when typesetting/line-breaking matters; skip in normal writing. |
-| `check_numbers` | Numbrite õigekirjutus: flags decimal-separator (period vs comma) and thousands-separator (comma vs space) violations. |
+| `check_punctuation` | Kirjavahemärgid: flags missing commas before subordinating conjunctions (et, sest, kuna, kuid, vaid, nagu, …). The comma-before-clause rule only. In `nii et`, `ilma et` and `selleks et` the comma goes before the pair, not before `et`, and a verbless `nagu` comparison (`tugev nagu karu`) takes none, so a hit there needs a second look. |
+| `check_hyphenation` | Poolitamine: returns line-break positions for a word; compound seams are among them but not singled out, so pick the seam yourself. Use only when typesetting/line-breaking matters; skip in normal writing. |
+| `check_numbers` | Numbrite õigekirjutus: flags decimal-separator (period vs comma) and thousands-separator (comma vs space) violations. It reads no context, so a time (`kell 10.30`), a section number (`punkt 3.2`) or a three-place decimal (`1,250 kg`) can be flagged too. |
 | `named_entities` | PER/LOC/ORG extraction. Useful for summarisation and content audit. |
 | `syllabify` | Per-syllable breakdown with quantity + accent. Useful for slogan rhythm, song lyrics, or pronunciation guides. |
 
@@ -55,10 +55,11 @@ The hard rule, applied throughout this skill:
 When the user asks you to proofread, copy-edit, or "check" Estonian
 text:
 
-1. Call `spell_check` on the full text. Note every word with
-   `spelling: false`.
+1. Call `spell_check` on the full text. It lists only the misspelled
+   words; an empty list means every word passed.
 2. For each misspelled word, pick the top suggestion from
-   `suggestions` if there's a clear best match; otherwise present the
+   `suggestions` (absent when Vabamorf has none) if there's a clear
+   best match; otherwise present the
    top 2-3 to the user.
 3. Call `check_capitalization` on the same text. It catches
    AI-generated capitalization mistakes that `spell_check` cannot:
@@ -81,8 +82,8 @@ the user gives you. The four EKI-Reeglid checks together catch the
 most common AI mistakes (wrongly-capitalized weekdays / language
 adjectives, split compounds, missing commas before subordinating
 conjunctions, wrong decimal/thousands separators). Each one is
-cheap; run them all in parallel and surface every flag with the
-`rule_estonian` label.
+cheap; run them all in parallel, check each flag against its
+sentence, and surface the ones that hold with the `rule_estonian` label.
 
 `check_hyphenation` is the odd one out: only call it if the user
 explicitly cares about line breaks (slogans, signs, fixed-width
@@ -211,13 +212,17 @@ When the user asks "what case is X" or you're about to explain why
 a form is what it is:
 
 1. Call `analyze_morphology(text, all_analyses=True)`: pass
-   `all_analyses=True` to see every possible analysis. Estonian
-   words are often morphologically ambiguous; a single surface form
-   like `riigid` could be plural nominative of `riik`.
+   `all_analyses=True` to see every reading left after in-context
+   disambiguation. Estonian words are often morphologically
+   ambiguous; a single surface form like `riigid` could be plural
+   nominative of `riik`. Context has already removed readings
+   (`seal` has three out of context and comes back with one), so a
+   single reading does not prove the word is unambiguous on its own.
 2. Read the `form` field on each analysis. The notation is `<number>
    <case>` for nominals (`sg n` = singular nominative, `pl p` =
    plural partitive) or person/tense/mood for verbs.
-3. The `root_tokens` field shows compound parts (`maailm` →
+3. The `root_tokens` field, present only for compounds, shows
+   compound parts (`maailm` →
    `["maa", "ilm"]`). Cite this when explaining compounds; don't
    guess the split.
 4. The `ending` field tells you the literal case ending; useful when

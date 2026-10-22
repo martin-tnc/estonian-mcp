@@ -81,14 +81,14 @@ of images is not one, however natural it sounds in ML jargon).
 | Tool | What it does |
 | --- | --- |
 | `tokenize(text)` | Split text into sentences and words |
-| `analyze_morphology(text)` | Lemma, POS, form and its Estonian name, root, ending, clitic, compound parts, ambiguity count, and usage flags (archaic / foreign / interjection / abbreviation / proper-noun) per word |
+| `analyze_morphology(text)` | Lemma, POS, form, root and ending per word (punctuation left out), plus, where they apply, the form's Estonian name, clitic, compound parts, ambiguity count, usage flags (archaic / foreign / interjection / abbreviation / proper-noun) and an indeclinable flag |
 | `paradigm(word)` | Full Vabamorf-generated inflection paradigm, 14 cases × 2 numbers for nominals (including ordinals, comparatives and superlatives), plus the short illative where a word has one (`majja` beside `majasse`), ~39 verb forms including the umbisikuline tegumood (`kasutatakse`, `kasutati`), with Estonian labels per form. A lemma with several inflection types (`kott` → `koti` or `kota`, two different words) returns one consistent table per type, corpus-ranked, rather than a merged one; pass an inflected form (`koti`) to select the type you mean |
-| `lemmatize(text)` | Just the dictionary form per word |
-| `pos_tag(text)` | Just the part-of-speech tag per word |
-| `spell_check(text)` | Spelling check + correction suggestions |
+| `lemmatize(text)` | Just the dictionary form per word (punctuation left out) |
+| `pos_tag(text)` | Just the part-of-speech tag per word (punctuation left out) |
+| `spell_check(text)` | Misspelled words with correction suggestions; an empty list means every word passed |
 | `syllabify(word)` | Syllables with quantity + accent |
 | `named_entities(text)` | People / places / organisations |
-| `synonyms(word)` | Synsets from Estonian WordNet, synonymous lemmas + definition + examples per word sense |
+| `synonyms(word)` | Synsets from Estonian WordNet: synonymous lemmas and a definition per word sense, plus examples where WordNet has them |
 | `find_related_words(word)` | Top-N semantically nearby words via fastText embeddings (semantically related, not always synonymous) |
 | `classify_register(text)` | Coarse formal/colloquial register hint with matched markers, consistency flag for register-mixed text, plus structural signals (umbisikuline tegumood ratio, noun density) so dense officialese no longer scores "neutral" |
 | `check_style(text)` | Style metrics, lemma-aware repetition, umbisikuline-tegumood ratio, sentence-length variance, hedging-word density |
@@ -97,19 +97,22 @@ of images is not one, however natural it sounds in ML jargon).
 | `check_redundancy(text)` | Pleonasm check, flags semantic doubling like `samuti ka` (also+also), `kõige optimaalsem` (most+optimal), and fixed redundant phrases |
 | `check_object_case(text)` | Käändeõpetus, flags direct-object case errors under negation and after partitive-only verbs (armastama, vihkama, vajama, …) |
 | `check_abbreviation_hyphenation(text)` | Lühendiortograafia, flags abbreviations with case endings missing the EKI-mandated hyphen (`MCPst` → `MCP-st`, `OÜle` → `OÜ-le`) |
-| `check_compound_familiarity(text)` | Attestation check, for each compound noun, reports whether the lemma is in the corpus vocabulary or Estonian WordNet and returns its top fastText neighbours. Unattested is ordinary for specialist vocabulary and is not a rewrite signal; the narrow `is_suspect` flag needs an unattested lemma whose nearest real neighbour is still under 0.55 (`mõtteliin`-style translationese, literal English "train of thought" → real Estonian is `mõttekäik`). With a server glossary, each compound also carries `in_domain_glossary` |
+| `check_compound_familiarity(text)` | Attestation check, for each compound noun, reports whether the lemma is in the corpus vocabulary, Estonian WordNet or the legal terms list, and returns the top fastText neighbours of each unattested one. Unattested is ordinary for specialist vocabulary and is not a rewrite signal; the narrow `is_suspect` flag needs an unattested lemma whose nearest real neighbour is still under 0.55 (`mõtteliin`-style translationese, literal English "train of thought" → real Estonian is `mõttekäik`). With a server glossary, each compound also carries `in_domain_glossary` |
 | `check_domain_terms(text, glossary?, suggest_cutoff?)` | Domain-glossary check, for Estonian written about an organisation's own systems, where a compound should be the organisation's term or the thing's identifier. Reports compounds that are unattested AND not on the operator's glossary or identifier list (see [Domain glossary](#domain-glossary-optional)): not the organisation's word, though not necessarily coined, since much ordinary Estonian is unattested, each with up to three glossary terms *spelled alike* (look-alikes, not synonyms) and the glossary term it is built on, if any (`vagunireisitabel` on `vagunireis`). The hosted server has no glossary of its own: pass your terms in `glossary` (up to 1,000), used for that call only |
 | `check_capitalization(text)` | Algustäheortograafia check, flags wrongly capitalized weekdays, months, nationalities, and language/culture adjectives per EKI's Reeglid |
 | `check_compounds(text)` | Liitsõnaõigekiri, flags common AI-generated splits of words that should be a single compound (`kooli maja` → `koolimaja`) |
 | `check_punctuation(text)` | Kirjavahemärgid, flags missing commas before subordinating conjunctions (`et`, `sest`, `kuna`, `kuid`, `vaid`, `nagu`, …) |
-| `check_hyphenation(word)` | Poolitamine, safe line-break positions for an Estonian word, syllable-boundary based with no-orphan-edge rule |
+| `check_hyphenation(word)` | Poolitamine, line-break positions for an Estonian word at syllable boundaries, never fewer than 2 characters from either end. Compound seams are among them but not singled out |
 | `check_numbers(text)` | Numbrite õigekirjutus, flags decimal separators (`3.14` → `3,14`) and thousands separators (`1,000,000` → `1 000 000`) |
 | `check_legalese(text)` | Legal plain-language aid, flags archaic `kantseliit` filler (`käesolev` → `see`, `juhul kui` → `kui`) and over-long sentences to simplify, while listing the **terms of art** that must be preserved so simplification doesn't change legal meaning |
-| `check_defined_terms(text)` | Long-document structure, maps terms defined with `(edaspidi «X»)`, counts their usage, lists `§` / `lõige` / `punkt` cross-references, and flags defined-but-unused or doubly-defined terms (cap raised to 500k chars) |
-| `common_legal_usage(word)` | Canonical legal collocations from an offline corpus index, how often a term occurs in legislation and the words most often seen before/after it (`hagi` → `esitama hagi`, `kohustus` → `kohustuse täitmine`), so the model uses real legalese instead of inventing it (bundled index: 5 core Riigi Teataja codes, obligations, civil procedure, property, penal, general; expandable) |
+| `check_defined_terms(text)` | Long-document structure, maps terms defined with `(edaspidi «X»)`, counts their exact-form uses (case-sensitive, so a term used only in inflected forms shows as defined-but-unused), lists `§` / `lõige` / `punkt` / `artikkel` cross-references, and flags defined-but-unused or doubly-defined terms (cap raised to 500k chars) |
+| `common_legal_usage(word)` | Canonical legal collocations from an offline corpus index, how often a term occurs in legislation and the commonest lemmas of the nearest content word on each side (`hagi` → `esitama hagi`, `kohustus` → `kohustuse täitmine`), so the model uses real legalese instead of inventing it (bundled index: 5 core Riigi Teataja codes, obligations, civil procedure, property, penal, general; expandable, see [Notes](#notes)) |
 
-POS tag set: `S`=noun, `V`=verb, `A`=adj, `P`=pron, `D`=adv, `K`=adp,
-`J`=conj, `N`=numeral, `I`=interj, `Y`=abbrev, `X`=foreign, `Z`=punct.
+POS tag set: `S`=noun, `H`=proper noun, `V`=verb, `A`=adj (`C`=comparative,
+`U`=superlative, `G`=indeclinable), `P`=pron, `D`=adv, `K`=adp, `J`=conj,
+`N`=cardinal, `O`=ordinal, `I`=interj, `Y`=abbreviation or symbol (`§`, `€`),
+`X`=verb-bound word (`plehku`). Punctuation (`Z`) is left out of per-word
+output; `tokenize` keeps it.
 
 ---
 
@@ -573,6 +576,12 @@ Terms of service for the hosted endpoint: [TERMS.md](TERMS.md).
   `check_compound_familiarity` and `check_domain_terms` is a ~33 MB compressed resource with a
   100K-word vocabulary (built locally from Facebook's cc.et.300 via
   compress-fasttext, CC-BY-SA-3.0; see [NOTICE](NOTICE)).
+- `common_legal_usage` reads a bundled index of five Riigi Teataja
+  codes (`data/legal_collocations.json.gz`). To cover more acts, build
+  one with `scripts/build_legal_collocations.py` (see
+  [scripts/README.md](scripts/README.md)) and set
+  `ESTNLTK_MCP_LEGAL_INDEX` to its path; the server reads it on the
+  first call.
 - Heavy neural taggers (`estnltk_neural`, BERT-based NER) are
   intentionally not pulled in; this server stays lean and fast.
 - First call after server start incurs a one-time tag-layer load
