@@ -224,11 +224,19 @@ check("does not echo the input word", set(syn) == {"synsets", "synset_count"}, s
 # The POS is the second-to-last dot segment of `name` (a literal can hold a
 # dot itself, "1."), so `pos` is not repeated; `examples` only when WordNet
 # has some.
-check("synsets carry name, definition and lemmas, no pos",
-      all({"name", "definition", "lemmas"} <= set(s) and "pos" not in s
+check("synsets carry name and lemmas, no pos",
+      all({"name", "lemmas"} <= set(s) and "pos" not in s
           and s["name"].rsplit(".", 2)[1] in {"n", "v", "a", "r"}
           for s in syn["synsets"]),
       str(syn["synsets"][:2]))
+# Some synsets have no gloss (lahe.a.02): `definition` is then omitted,
+# never null.
+lahe = server.synonyms("lahe", max_synsets=20)["synsets"]
+check("definition is present when WordNet has a gloss and never null",
+      any("definition" in s for s in syn["synsets"])
+      and all(s.get("definition", "x") for s in lahe)
+      and any("definition" not in s for s in lahe),
+      str([(s["name"], s.get("definition")) for s in lahe]))
 korpus = server.synonyms("korpus", max_synsets=10)["synsets"]
 check("examples is omitted when empty and present when not",
       all(s.get("examples", ["x"]) for s in korpus)

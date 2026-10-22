@@ -1,7 +1,7 @@
 """Tests for resource-availability handling (issues #37 and #38).
 
 The defect these pin down: `check_term_consistency` returned
-"Ebajärjekindlat terminikasutust ei tuvastatud" — a confident negative —
+"Ebajärjekindlat terminikasutust ei tuvastatud" (a confident negative)
 while one of its two rules was switched off because Estonian WordNet was
 missing. The only signal was a `rules_run` flag a caller had to know to
 read. A partial run that reads as a clean bill of health is worse than a
@@ -49,7 +49,7 @@ def _with_wordnet(available: bool):
 
     Swaps the module attribute rather than clearing the lru_cache, because
     the production code resolves `_wordnet_available` through a module
-    global at call time — so replacing the attribute is what actually takes
+    global at call time, so replacing the attribute is what actually takes
     effect, and it leaves the real cache untouched for later tests.
     """
     real_avail = server._wordnet_available
@@ -58,7 +58,7 @@ def _with_wordnet(available: bool):
     class _FakeWordnet:
         """Deterministic stand-in so the available=True path never touches
         the real resource. Without this, running these tests on the very
-        machine this change targets — a fresh clone with no WordNet — would
+        machine this change targets (a fresh clone with no WordNet) would
         itself trigger EstNLTK's download and stdin prompt, i.e. the exact
         behaviour under test."""
 
@@ -77,7 +77,7 @@ def _with_wordnet(available: bool):
                 def _boom():
                     raise AssertionError(
                         "_wordnet() must NOT be called when the resource is "
-                        "unavailable — that is what triggers a download "
+                        "unavailable: that is what triggers a download "
                         "attempt and the stdout prompt"
                     )
                 server._wordnet = _boom
@@ -93,7 +93,7 @@ def _with_wordnet(available: bool):
 
 def degraded_is_visible() -> None:
     """Issue #38: a half-strength run must say so where a human will see it."""
-    print("check_term_consistency — degraded run is visible")
+    print("check_term_consistency: degraded run is visible")
 
     with _with_wordnet(False):
         r = server.check_term_consistency(DOC)
@@ -118,9 +118,9 @@ def degraded_is_visible() -> None:
 
 
 def healthy_run_is_not_polluted() -> None:
-    """The warning must appear ONLY when degraded — otherwise it is noise
+    """The warning must appear ONLY when degraded; otherwise it is noise
     and callers learn to ignore it."""
-    print("check_term_consistency — healthy run stays clean")
+    print("check_term_consistency: healthy run stays clean")
 
     with _with_wordnet(True):
         r = server.check_term_consistency(DOC)
@@ -168,7 +168,7 @@ def no_download_attempt_at_runtime() -> None:
 def availability_probe_is_local_only() -> None:
     """_wordnet_available must answer from disk, never from the network,
     and must NOT be cached."""
-    print("_wordnet_available — pure local, uncached probe")
+    print("_wordnet_available: pure local, uncached probe")
     v = server._wordnet_available()
     check("returns a bool", isinstance(v, bool), repr(v))
 

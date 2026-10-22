@@ -2,7 +2,7 @@
 check_officialese, and check_term_consistency.
 
 These pin the behaviour against a real Estonian R&D report paragraph and
-the plain-language rewrite a native speaker produced from it — the
+the plain-language rewrite a native speaker produced from it: the
 bureaucratic original must flag and the human rewrite must come back
 clean. That pair is also what the thresholds in server.py are calibrated
 on, so a threshold change that breaks the separation fails here.
@@ -87,7 +87,7 @@ def _imp(text: str) -> dict:
 def impersonal_voice_corrections() -> None:
     """The four counting bugs, each pinned by the construction that
     exposed it on real text."""
-    print("impersonal voice — counting corrections")
+    print("impersonal voice: counting corrections")
 
     # (1) `ei` is tagged pos=V form=neg; counting it inflated total_verbs
     # and deflated the ratio.
@@ -103,7 +103,7 @@ def impersonal_voice_corrections() -> None:
     r = _imp("Meeskond otsustas esitada aruande.")
     check("bare da-infinitive not counted", r["passive_count"] == 0, str(r))
 
-    # (3) `ei avaldatud` gets tagged pos=A, not V — was skipped entirely.
+    # (3) `ei avaldatud` gets tagged pos=A, not V, so it was skipped entirely.
     r = _imp("Vastusevõtmeid hindajatele ei avaldatud.")
     check("`ei avaldatud` counted despite pos=A tag",
           r["passive_count"] == 1, str(r))
@@ -119,7 +119,7 @@ def impersonal_voice_corrections() -> None:
     check("`on kasutatud` counted as impersonal", r["passive_count"] == 1,
           str(r))
 
-    # `mitte` negates a noun phrase, not a verb — must not trigger.
+    # `mitte` negates a noun phrase, not a verb, so it must not trigger.
     r = _imp("Mõõdeti kooskõla, mitte inimeste antud märgenditega.")
     check("`mitte X antud` not counted as impersonal predicate",
           "antud" not in r["examples"], str(r))
@@ -132,8 +132,8 @@ def impersonal_voice_corrections() -> None:
 
 def officialese_separation() -> None:
     """The gates must separate the bureaucratic original from the human
-    rewrite — that separation IS the calibration."""
-    print("check_officialese — original vs human rewrite")
+    rewrite: that separation IS the calibration."""
+    print("check_officialese: original vs human rewrite")
 
     o1 = server.check_officialese(ORIG_P1)
     o2 = server.check_officialese(ORIG_P2)
@@ -215,7 +215,7 @@ def officialese_separation() -> None:
 
 
 def officialese_lexicons() -> None:
-    print("check_officialese — filler, phrases, poolt-calque, clause stacking")
+    print("check_officialese: filler, phrases, poolt-calque, clause stacking")
     probe = (
         "Projekti raames viidi läbi analüüs, mis kujutab endast olulist "
         "etappi. Mudeli poolt loodud märgendid omavad tähtsust. "
@@ -295,6 +295,17 @@ def term_consistency() -> None:
     head_groups = [g for g in r["groups"] if g["rule"] == "shared-compound-head"]
     check("the andmestik variants are grouped", len(head_groups) >= 1,
           str(r["groups"]))
+    check("a compound-head group names its head", all(g.get("head") for g in head_groups),
+          str(head_groups))
+    # `head` does not apply to a synset group, and a field that does not
+    # apply is omitted (the server instructions promise it).
+    synset_doc = "Andmed koguti. Andmestik valideeriti. Andmed ja andmestik on olulised."
+    synset_groups = [g for g in server.check_term_consistency(synset_doc)["groups"]
+                     if g["rule"] == "shared-wordnet-synset"]
+    if server._wordnet_available():
+        check("a synset group is found", bool(synset_groups), synset_doc)
+    check("a synset group carries no head key", all("head" not in g for g in synset_groups),
+          str(synset_groups))
     if head_groups:
         g = head_groups[0]
         lemmas = {v["lemma"] for v in g["variants"]}
@@ -306,7 +317,7 @@ def term_consistency() -> None:
         check("group names a dominant term", bool(g.get("dominant")), str(g))
 
     # Two compounds sharing a head, with no bare head, is deliberately
-    # NOT enough — those are usually genuinely different things.
+    # NOT enough: those are usually genuinely different things.
     r = server.check_term_consistency(
         "Tegevusvaldkond on lai. Märgendusvaldkond on kitsam."
     )

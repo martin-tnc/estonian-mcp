@@ -234,6 +234,10 @@ def _lean_schema(node: Any, *, output: bool) -> Any:
     return out
 
 
+# Argument errors list at most this many fields. A glossary of 1,000
+# over-long terms is 1,000 errors, and each would cost the caller tokens.
+_MAX_ARG_ERRORS = 5
+
 _LIST_ITEM = re.compile(r"^(?:[-*•]|\d+[.)])\s")
 
 
@@ -271,8 +275,8 @@ class _EstonianMCP(FastMCP):
       keeps exactly the keys the tool returned; the SDK default fills every
       declared-but-absent key with null. The lowlevel server still
       validates structuredContent against the advertised outputSchema.
-    * argument errors: one line per field, without pydantic's docs URL or
-      a repr of the caller's input.
+    * argument errors: one clause per field (at most _MAX_ARG_ERRORS),
+      without pydantic's docs URL or a repr of the caller's input.
     """
 
     async def list_tools(self) -> list[MCPTool]:
@@ -295,14 +299,19 @@ class _EstonianMCP(FastMCP):
         except ToolError as e:
             cause = e.__cause__
             if isinstance(cause, ValidationError) and cause.title == meta.arg_model.__name__:
-                raise ToolError("Input validation error: " + "; ".join(
-                    f"{'.'.join(map(str, err['loc']))}: {err['msg']}"
-                    for err in cause.errors(include_url=False, include_input=False)
-                )) from cause
+                errors = cause.errors(include_url=False, include_input=False)
+                shown = "; ".join(f"{'.'.join(map(str, err['loc']))}: {err['msg']}"
+                                  for err in errors[:_MAX_ARG_ERRORS])
+                more = len(errors) - _MAX_ARG_ERRORS
+                if more > 0:
+                    shown += f"; and {more} more"
+                raise ToolError(f"Input validation error: {shown}") from cause
             raise
         if meta.output_model is None or not isinstance(raw, (dict, list)):
             return meta.convert_result(raw)  # not this server's shape: SDK default
-        text = pydantic_core.to_json(raw, fallback=str).decode()  # compact, keeps õäöü
+        # Compact, keeps õäöü, and NaN/inf become null as in structuredContent
+        # (a bare NaN is not JSON, and a strict client would reject the block).
+        text = pydantic_core.to_json(raw, fallback=str, inf_nan_mode="null").decode()
         payload = {"result": raw} if meta.wrap_output else raw
         structured = meta.output_model.model_validate(payload).model_dump(
             mode="json", by_alias=True, exclude_unset=True)
@@ -2279,7 +2288,7 @@ def find_related_words(word: Annotated[str, Field(description="One Estonian word
 @_counted
 def synonyms(word: Annotated[str, Field(description="One Estonian word in dictionary form, spelled as the dictionary spells it (kohv, not kohvi or Kohv).")], max_synsets: Annotated[int, Field(description="Maximum number of word-sense synsets to return.")] = 5) -> _SynonymsResult:
     """Estonian WordNet synsets for a word, one per sense, each with
-    `lemmas` (the synonyms), `definition` and any `examples`.
+    `lemmas` (the synonyms), any `definition` and any `examples`.
     `synset_count` is the total before `max_synsets` cuts the list.
 
     For "is this the right word here?", read each `definition` against the
@@ -2307,7 +2316,9 @@ def synonyms(word: Annotated[str, Field(description="One Estonian word in dictio
     out: list[dict] = []
     for s in synsets[:max_synsets]:
         # The POS is in `name` (korpus.n.01), so it is not repeated.
-        entry: dict = {"name": s.name, "definition": s.definition}
+        entry: dict = {"name": s.name}
+        if s.definition:
+            entry["definition"] = s.definition
         if s.examples:
             entry["examples"] = list(s.examples)
         entry["lemmas"] = list(s.lemmas)
@@ -3425,7 +3436,8 @@ def _check_domain_terms(text: str, glossary: list[str] | None = None,
         notes.append(
             f"Suggestions stop after {_DOMAIN_SUGGEST_CAP} reported compounds "
             f"or {_DOMAIN_SUGGEST_SECONDS:g} seconds, whichever comes first; "
-            "later entries have `suggestions: null`.")
+            "later entries have `suggestions: null` and were not checked "
+            "for `contains_glossary_term`.")
     if any(u["in_wordnet"] is None for u in unlisted):
         notes.append(
             "WordNet was unavailable (`wordnet_checked: false`), so it may "
@@ -3967,8 +3979,9 @@ def check_legalese(text: Annotated[str, Field(description="Estonian statute or c
     must keep the legal meaning.
 
     issues: archaic filler and stock phrases with a plainer suggestion,
-    and over-long sentences to split. terms_of_art: legal terms (first
-    use per lemma) to keep verbatim, never swapped for a general synonym.
+    and over-long or comma-heavy sentences to split. terms_of_art: legal
+    terms (first use per lemma) to keep verbatim, never swapped for a
+    general synonym.
     Starter lexicons: an empty or short issues list does not mean the
     text is plain, and an unlisted word can still be a term of art. For
     reports and business prose use check_officialese.
@@ -4054,8 +4067,9 @@ def _common_legal_usage(word: str) -> dict:
 ))
 @_counted
 def common_legal_usage(word: Annotated[str, Field(description="One Estonian word, any inflected form.")]) -> _LegalUsageResult:
-    """Standard legal collocations for an Estonian word, from five core
-    Riigi Teataja codes. Use it instead of inventing legal phrasing.
+    """Standard legal collocations for an Estonian word, from an index of
+    Riigi Teataja legislation (the bundled one: five core codes). Use it
+    instead of inventing legal phrasing.
 
     common_before / common_after: the commonest lemmas of the nearest
     content word on each side, with counts; inflect them to fit. A
@@ -4374,7 +4388,7 @@ def _check_officialese(text: str) -> dict:
                 "rule": "long-sentence",
                 "rule_estonian": "liiga pikk lause",
                 "explanation": (
-                    f"Lauses on {n_words} sisusõna (piir "
+                    f"Lauses on {n_words} sõna (piir "
                     f"{_OFFICIALESE_LONG_SENTENCE_WORDS})."
                 ),
                 "suggestion": "jaga lause lühemateks lauseteks",
@@ -4653,7 +4667,6 @@ def _check_term_consistency(text: str, glossary: list[str] | None = None) -> dic
             seen_pairs.add((a, b))
             variants = sorted([a, b], key=lambda w: (-counts[w], w))
             groups.append({
-                "head": None,
                 "rule": "shared-wordnet-synset",
                 "rule_estonian": "sama tähendusrühm",
                 "synsets": sorted(shared),

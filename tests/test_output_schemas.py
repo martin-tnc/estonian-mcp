@@ -31,6 +31,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import jsonschema
+from mcp.shared.memory import create_connected_server_and_client_session as connect
 
 import server
 
@@ -97,6 +98,9 @@ CALLS: list[tuple[str, dict]] = [
     ("common_legal_usage", {"word": "hagi"}),
     ("synonyms", {"word": "kohv"}),                 # needs WordNet
     ("find_related_words", {"word": "kohv"}),       # needs fastText
+    # A string with no known subword has a zero vector, so every score is
+    # NaN; the text block must still be JSON and say what structured says.
+    ("find_related_words", {"word": "xqzzyv", "n": 3}),
 ]
 
 # These need a downloaded resource. Absent, the tool raises on purpose and
@@ -150,21 +154,48 @@ async def run() -> None:
 
     print("the wire format is lean")
     # Every caller pays for these bytes in tokens; see _EstonianMCP. One
-    # compact block, saying exactly what structuredContent says.
-    for name, args in CALLS:
-        if name in NEEDS_RESOURCES:
-            continue
-        label = f"{name}({next(iter(args.values()))!r})"
-        content, structured = await server.mcp.call_tool(name, args)
-        text = content[0].text if content else ""
-        check(f"{label} answers in one text block", len(content) == 1, str(len(content)))
-        payload = json.loads(text)
-        check(f"{label} text is compact JSON",
-              text == json.dumps(payload, ensure_ascii=False, separators=(",", ":")), text[:80])
-        # List tools are wrapped as {"result": [...]} in structuredContent,
-        # which the outputSchema requires; the text is the bare list.
-        expected = structured["result"] if isinstance(payload, list) else structured
-        check(f"{label} text equals structuredContent", payload == expected, text[:80])
+    # compact block, saying exactly what structuredContent says, checked
+    # through a real client session so the lowlevel server's own output
+    # validation runs too.
+    def strict(text):
+        # json.loads accepts a bare NaN; a strict client does not.
+        return json.loads(text, parse_constant=lambda c: (_ for _ in ()).throw(ValueError(c)))
+
+    async with connect(server.mcp._mcp_server) as client:
+        for name, args in CALLS:
+            label = f"{name}({next(iter(args.values()))!r})"
+            if any(s.startswith(label) for s in skipped):
+                continue
+            r = await client.call_tool(name, args)
+            check(f"{label} is not an error", not r.isError, str(r.content)[:100])
+            text = r.content[0].text if r.content else ""
+            check(f"{label} answers in one text block", len(r.content) == 1, str(len(r.content)))
+            try:
+                payload = strict(text)
+            except ValueError as e:
+                check(f"{label} text is strict JSON", False, f"{e}: {text[:80]}")
+                continue
+            check(f"{label} text is compact JSON",
+                  text == json.dumps(payload, ensure_ascii=False, separators=(",", ":")), text[:80])
+            # List tools are wrapped as {"result": [...]} in structuredContent,
+            # which the outputSchema requires; the text is the bare list.
+            structured = r.structuredContent
+            expected = structured["result"] if isinstance(payload, list) else structured
+            check(f"{label} text equals structuredContent", payload == expected, text[:80])
+
+        print("argument errors are short and do not echo the input")
+        r = await client.call_tool("tokenize", {"text": 5})
+        msg = r.content[0].text if r.content else ""
+        check("a wrong type is one short clause",
+              r.isError and msg == "Input validation error: text: Input should be a valid string",
+              msg[:160])
+        r = await client.call_tool("check_domain_terms",
+                                   {"text": "x", "glossary": ["a" * 201] * 40})
+        msg = r.content[0].text if r.content else ""
+        check("forty bad glossary terms name five and count the rest",
+              r.isError and msg.count("glossary.") == server._MAX_ARG_ERRORS
+              and msg.endswith(f"and {40 - server._MAX_ARG_ERRORS} more") and "aaaa" not in msg,
+              msg[:200])
     # The SDK default filled each declared-but-absent key with null, which
     # Claude Code shows the model. paradigm('maja') omits several keys.
     _content, structured = await server.mcp.call_tool("paradigm", {"word": "maja"})
@@ -232,6 +263,20 @@ async def run() -> None:
         check(f"instructions mention {needle!r}", needle in instr)
     check("instructions stay well under Claude Code's 4,096-character cut",
           len(instr) < 3000, str(len(instr)))
+    # Steering that left the instructions in 0.8.0 lives only in the
+    # description of the tool it governs, which a client loads with it.
+    moved = {
+        "paradigm": ("ambiguity_estonian", "inflected form"),
+        "check_compound_familiarity": ("not evidence of invention",),
+        "check_domain_terms": ("not synonyms", "not necessarily coined"),
+        "synonyms": ("`definition` against the context",),
+        "spell_check": ("check_compound_familiarity",),
+        "check_officialese": ("check_legalese",),
+    }
+    for name, needles in moved.items():
+        desc = " ".join(tools[name].description.split())
+        for needle in needles:
+            check(f"{name} description keeps {needle!r}", needle in desc, desc[:120])
 
     print("every tool in the registry is exercised here")
     registered = set(tools)

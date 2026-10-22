@@ -412,6 +412,11 @@ def the_call_glossary() -> None:
         check("and a note says where suggestions stop, by count or by time",
               "whichever comes first; later entries have `suggestions: null`" in (out.get("note") or ""),
               str(out.get("note")))
+        # Past the cap contains_glossary_term is not computed, so its absence
+        # there must not read as "not built on a glossary term".
+        check("the note says capped entries were not checked for a glossary term",
+              "not checked for `contains_glossary_term`" in (out.get("note") or ""),
+              str(out.get("note")))
         out = server._check_domain_terms("x", None)
         check("no glossary terms: never capped, no suggestion keys, no note",
               out["suggestions_capped"] is False and "note" not in out

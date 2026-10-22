@@ -12,13 +12,15 @@ versions follow [Semantic Versioning](https://semver.org/).
 Every caller pays in tokens for what this server sends: the tool list on
 every turn, each result once it is read. This release cuts both without
 dropping what a caller cannot reconstruct. Measured with o200k_base over
-the real MCP protocol, on a 97-word paragraph and one call to each tool:
-the tool list goes from 13,961 to 8,063 tokens, the server instructions
-from 623 to 469, the results from 33,956 to 11,120 text tokens and from
-24,346 to 11,135 tokens of structuredContent (what Claude Code, Codex
-and VS Code show the model). On ten times that paragraph the results go
-from 229,724 to 70,570 text tokens. Several output shapes change, hence
-the minor version: a client that reads a removed key must stop.
+the real MCP protocol, on an 84-word paragraph and one call to each tool:
+the tools/list JSON goes from 13,961 to 8,064 tokens, the server
+instructions from 623 to 469, the results from 33,956 to 11,116 text
+tokens and from 24,346 to 11,131 tokens of compact structuredContent
+(what Claude Code, Codex and VS Code show the model). On ten times that
+paragraph the results go from 229,724 to 70,566 text tokens. Per-tool
+figures below are compact structuredContent too. Several output shapes
+change, hence the minor version: a client that reads a removed key must
+stop.
 
 ### Changed
 
@@ -29,7 +31,8 @@ the minor version: a client that reads a removed key must stop.
   result is now one compact block with exactly the keys the tool
   returned, and structuredContent says the same. The tool list drops the
   `title` annotations pydantic put on every schema node, and descriptions
-  arrive dedented and unwrapped. Argument errors are one line per field.
+  arrive dedented and unwrapped. An argument error is one clause per
+  field, five at most, without a copy of the input.
   `mcp` is pinned to `>=1.28,<2` for the SDK internals this relies on.
 - **No tool echoes its input.** `text`, `word` and `input` are gone from
   every result that sent the caller's own input back, including the
@@ -46,7 +49,8 @@ the minor version: a client that reads a removed key must stop.
   was found in that check's scope; the input caps; a field that does not
   apply is omitted. The `paradigm` and `synonyms` guidance moved into
   those tools' descriptions. A test pins the rules the tools rely on.
-- **Every description is shorter.** History, rationale and internals are
+- **Descriptions are shorter** (all but `pos_tag`'s, whose legend now
+  lists every tag; see Fixed). History, rationale and internals are
   out; what each tool does, when to use a sibling instead, what the
   fields mean and the caveats are in. Several descriptions now state
   real limits they used to hide: `check_numbers` reads no context
@@ -58,14 +62,14 @@ the minor version: a client that reads a removed key must stop.
 - **`spell_check` lists only the misspelled tokens**, one entry per
   occurrence, each with `text`, `spelling: false` and `suggestions` when
   Vabamorf has any. Clean text answers `[]`. On the sample paragraph the
-  answer goes from 1,840 tokens to 33.
+  answer goes from 1,378 tokens to 28.
 - **`analyze_morphology` sends a field only when it applies.** `usage_note`
   and `usage_note_estonian` appear together on a flagged word;
   `indeclinable` appears only as `true`; `clitic`, `form_estonian` and
   `root_tokens` (two or more parts) only when they carry something;
   `analyses_count` only above 1, and not under `all_analyses`, where it
   always equalled the length of `analyses`. No `indeclinable` means
-  false, no `analyses_count` means 1. The result is 54% smaller.
+  false, no `analyses_count` means 1. The result is 57% smaller.
 - **`lemmatize`, `pos_tag` and `analyze_morphology` leave out
   punctuation** (tokens whose readings are all Vabamorf `Z`, emoticons
   included). Symbols such as `§` and `€` are `Y` and stay. These lists no
@@ -78,7 +82,12 @@ the minor version: a client that reads a removed key must stop.
 - **`check_hyphenation`** returns `breaks`, `preferred` and
   `syllable_count`; `summary_estonian` restated the breaks.
 - **`synonyms`** drops each synset's `pos`, which is in `name`
-  (`korpus.n.03`), and sends `examples` only when WordNet has some.
+  (`korpus.n.03`), and sends `definition` and `examples` only when
+  WordNet has them (`lahe.a.02` has no gloss and used to send
+  `definition: null`).
+- **`check_term_consistency`**: a `shared-wordnet-synset` group has no
+  `head` key; it used to send `head: null`. `head` belongs to
+  `shared-compound-head` groups.
 - **The issue-list checks** (`check_compounds`, `check_punctuation`,
   `check_capitalization`, `check_numbers`, `check_object_case`,
   `check_abbreviation_hyphenation`) drop each issue's `explanation`,
@@ -98,7 +107,7 @@ the minor version: a client that reads a removed key must stop.
   pass is skipped; with them, `contains_glossary_term` appears only when
   the compound is built on one.
 - **`check_officialese`**: a `long-sentence` explanation is the count
-  against the limit (`Lauses on 31 sisusõna (piir 25).`) without the
+  against the limit (`Lauses on 31 sõna (piir 25).`) without the
   fixed rationale that followed it on every flagged sentence.
   **`check_legalese`** likewise: `Lause on 28 sõna ja 8 koma.`
 - **`common_legal_usage`**: `summary_estonian` names the index entry
@@ -138,6 +147,13 @@ the minor version: a client that reads a removed key must stop.
   `impersonal-voice`, and which issues are document-wide at position 0.
 - **`check_hyphenation`'s description said compound seams go
   unmarked.** They are among the breaks, just not singled out.
+- **`check_officialese` counted every word of a long sentence and called
+  them content words** (`Lauses on 34 sisusõna`, with `ja`, `me` and `mis`
+  among them). The explanation now says `sõna`, as the description does.
+- **`find_related_words` sent `NaN` in its text block** for a string with
+  no known subword (`xqzzyv`), whose vector is all zeros. `NaN` is not
+  JSON, so a strict client could not parse the result; it is now `null`,
+  as structuredContent always had it.
 
 ### Security
 
