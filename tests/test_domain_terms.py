@@ -44,7 +44,7 @@ def check(label: str, cond: bool, detail: str = "") -> None:
 def compound(lemma: str, attested: bool, forms=(), parts=(), suspect=False) -> dict:
     return {"word": lemma, "lemma": lemma, "position": 0, "attested": attested,
             "in_wordnet": False, "forms": sorted({lemma, *forms}),
-            "parts": list(parts), "is_suspect": suspect, "reasons": []}
+            "parts": list(parts), "is_suspect": suspect}
 
 
 def reset(**env: str | None) -> None:
@@ -89,10 +89,8 @@ def the_stamp() -> None:
     c = server._domain_mark(compound("ladustamiskoha", False), {"ladustamiskoha", "ladustamiskoht", "ladustamiskohad"}, GLOSSARY)
     check("a later lemma reading counts", c.get("in_domain_glossary") is True, str(c))
     c = compound("vagunireis", False, suspect=True)
-    c["reasons"] = ["weak neighbour"]
     server._domain_mark(c, {"vagunireis"}, GLOSSARY)
-    check("a listed compound is never suspect",
-          c["is_suspect"] is False and c["reasons"] == [], str(c))
+    check("a listed compound is never suspect", c["is_suspect"] is False, str(c))
 
 
 def the_decision() -> None:
@@ -114,7 +112,21 @@ def the_decision() -> None:
     check("and its similarity", sugg and sugg[0]["similarity"] == 0.7, str(sugg))
     check("the entry has the documented keys",
           out and set(out[0]) == {"word", "lemma", "position", "in_wordnet",
-                                  "contains_glossary_term", "suggestions"}, str(out))
+                                  "suggestions"}, str(out))
+
+    print("no glossary terms: nothing to suggest, no suggestion keys")
+    out = server._domain_terms_from([compound("vagunisõit", False)], frozenset(), frozenset())
+    check("reported with only the attestation keys",
+          len(out) == 1 and set(out[0]) == {"word", "lemma", "position", "in_wordnet"}, str(out))
+    out = server._domain_terms_from([compound("vagunisõit", False)], frozenset(),
+                                    frozenset({"kaupkood"}))
+    check("an identifier list alone suggests nothing either",
+          len(out) == 1 and set(out[0]) == {"word", "lemma", "position", "in_wordnet"}, str(out))
+    out = server._domain_terms_from(
+        [compound("vagunisõit", False), compound("vaguniretk", False)],
+        frozenset(), frozenset(), cap=1, seconds=0)
+    check("and no cap applies to them",
+          len(out) == 2 and all("suggestions" not in u for u in out), str(out))
 
     out = server._domain_terms_from([compound("mõtteliin", False)], GLOSSARY, GLOSSARY)
     check("nothing close: reported, no suggestions",
@@ -151,8 +163,8 @@ def the_decision() -> None:
           out and out[0]["contains_glossary_term"] == "vagunireis", str(out))
     c = compound("vagunisõit", False, parts=["vaguni", "sõit"])
     out = server._domain_terms_from([c], GLOSSARY, GLOSSARY)
-    check("a look-alike is not built on the term",
-          out and out[0]["contains_glossary_term"] is None, str(out))
+    check("a look-alike is not built on the term, and has no such key",
+          out and "contains_glossary_term" not in out[0], str(out))
 
     c = compound("eid-kaardilugeja", False, parts=["eID", "kaardi", "lugeja"])
     out = server._domain_terms_from([c], frozenset({"eid-kaart"}), frozenset({"eid-kaart"}))
@@ -181,13 +193,15 @@ def the_decision() -> None:
     check("both reported", len(out) == 2, str(out))
     check("the first has suggestions, the second None",
           out and out[0]["suggestions"] and out[1]["suggestions"] is None, str(out))
+    check("and the second no contains_glossary_term",
+          out and "contains_glossary_term" not in out[1], str(out))
     out = server._domain_terms_from([compound("vagunisõit", False)], GLOSSARY, GLOSSARY, cap=1)
     check("exactly at the cap, still suggested", out and out[0]["suggestions"] is not None, str(out))
     out = server._domain_terms_from(
         [compound("vagunisõit", False), compound("vaguniretk", False)],
         GLOSSARY, GLOSSARY, seconds=0)
     check("past the time budget: reported without suggestions",
-          len(out) == 2 and all(u["suggestions"] is None and u["contains_glossary_term"] is None for u in out),
+          len(out) == 2 and all(u["suggestions"] is None and "contains_glossary_term" not in u for u in out),
           str(out))
 
 
@@ -395,9 +409,42 @@ def the_call_glossary() -> None:
         out = server._check_domain_terms("x", ["vagunireis"])
         check("true past the cap", out["suggestions_capped"] is True
               and out["unlisted_compounds"][-1]["suggestions"] is None, str(out["suggestions_capped"]))
+        check("and a note says where suggestions stop, by count or by time",
+              "whichever comes first; later entries have `suggestions: null`" in (out.get("note") or ""),
+              str(out.get("note")))
+        out = server._check_domain_terms("x", None)
+        check("no glossary terms: never capped, no suggestion keys, no note",
+              out["suggestions_capped"] is False and "note" not in out
+              and all("suggestions" not in u for u in out["unlisted_compounds"]), str(out.get("note")))
         many["all_compounds"] = many["all_compounds"][:server._DOMAIN_SUGGEST_CAP]
         out = server._check_domain_terms("x", ["vagunireis"])
         check("false at the cap", out["suggestions_capped"] is False, str(out["suggestions_capped"]))
+        check("and no note", "note" not in out, str(out.get("note")))
+
+        print("the WordNet note, only when it applies")
+        unasked = {"compounds_analysed": 1, "wordnet_checked": True,
+                   "all_compounds": [{**compound("vagunisõit", False), "in_wordnet": None}]}
+        server._check_compound_familiarity = lambda text, *, neighbours=True: unasked
+        out = server._check_domain_terms("x", None)
+        check("WordNet not asked about a reported compound: a note says so",
+              "`in_wordnet` is null" in (out.get("note") or ""), str(out.get("note")))
+        unasked["wordnet_checked"] = False
+        out = server._check_domain_terms("x", None)
+        check("WordNet unavailable and a compound reported: a note says so",
+              "WordNet was unavailable" in (out.get("note") or ""), str(out.get("note")))
+        quiet = {"compounds_analysed": 1, "wordnet_checked": False,
+                 "all_compounds": [{**compound("koolimaja", True), "in_wordnet": None}]}
+        server._check_compound_familiarity = lambda text, *, neighbours=True: quiet
+        out = server._check_domain_terms("x", None)
+        check("WordNet unavailable but nothing reported: no note", "note" not in out,
+              str(out.get("note")))
+        asked = {"compounds_analysed": 1, "wordnet_checked": True,
+                 "all_compounds": [compound("vagunisõit", False)]}
+        server._check_compound_familiarity = lambda text, *, neighbours=True: asked
+        out = server._check_domain_terms("x", None)
+        check("WordNet asked about every reported compound: no note", "note" not in out,
+              str(out.get("note")))
+        check("and the input is not echoed", "text" not in out, str(sorted(out)))
     finally:
         server._check_compound_familiarity = real
 
@@ -519,7 +566,11 @@ def end_to_end() -> None:
     check("check_term_consistency has no glossary keys",
           "in_domain_glossary" not in dump and '"preferred"' not in dump, dump[:200])
     check("nor a glossary sentence in its note", "domain glossary" not in tc_plain["note"])
-    check("check_compound_familiarity has none in its note", "domain glossary" not in plain["note"])
+    check("check_compound_familiarity has no glossary sentence in a note",
+          "domain glossary" not in (plain.get("note") or ""), str(plain.get("note")))
+    if plain["wordnet_checked"]:
+        check("check_compound_familiarity has no static note", "note" not in plain,
+              str(plain.get("note")))
     check("mõtteliin is suspect without a glossary", len(plain["suspect_compounds"]) == 1, str(plain["suspect_compounds"]))
 
     print("check_term_consistency with a glossary, end to end")
@@ -542,7 +593,13 @@ def end_to_end() -> None:
         check("counted as listed",
               fam["summary_estonian"].endswith("Sõnavarast ja tesaurusest puuduvatest on 2 valdkonna sõnastikus."),
               fam["summary_estonian"])
-        check("and the note explains in_domain_glossary", "in_domain_glossary" in fam["note"])
+        check("every compound carries in_domain_glossary",
+              fam["all_compounds"] and all("in_domain_glossary" in c for c in fam["all_compounds"]),
+              str(fam["all_compounds"]))
+        check("which the tool description explains",
+              "in_domain_glossary" in server.check_compound_familiarity.__doc__)
+        if fam["wordnet_checked"]:
+            check("and no glossary note is added", "note" not in fam, str(fam.get("note")))
     finally:
         os.unlink(path)
         reset()
@@ -564,7 +621,11 @@ def end_to_end() -> None:
         server.check_domain_terms("See on vagunisõit ja mõtteliin.")
         check("no most_similar on check_domain_terms' path", searched == [], str(searched))
         server.check_compound_familiarity("See on mõtteliin.")
-        check("check_compound_familiarity still searches", searched != [], str(searched))
+        check("check_compound_familiarity still searches an unattested lemma",
+              searched == ["mõtteliin"], str(searched))
+        searched.clear()
+        server.check_compound_familiarity("Käisin raamatukogus.")
+        check("but not an attested one", searched == [], str(searched))
     finally:
         server._embeddings = real
 

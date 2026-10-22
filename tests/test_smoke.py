@@ -304,10 +304,53 @@ check("mõtteliin flagged as suspect",
       str(r["suspect_compounds"]))
 check("wordnet_checked reported", isinstance(r["wordnet_checked"], bool),
       str(r.get("wordnet_checked")))
+check("suspect_compounds lists the lemma", r["suspect_compounds"] == ["mõtteliin"],
+      str(r["suspect_compounds"]))
+check("unattested_compounds lists the lemma", r["unattested_compounds"] == ["mõtteliin"],
+      str(r["unattested_compounds"]))
+check("the input is not echoed", "text" not in r, str(sorted(r)))
+# A note only says WordNet gave no answer for an unattested compound, so
+# where WordNet is installed there is none here; where it is not, there is.
+if r["wordnet_checked"]:
+    check("no note with WordNet consulted", "note" not in r, str(r.get("note")))
+else:
+    check("WordNet unavailable: a note says so",
+          "WordNet was unavailable" in (r.get("note") or ""), str(r.get("note")))
+mt = next((c for c in r["all_compounds"] if c["lemma"] == "mõtteliin"), {})
+check("no keys that repeat neighbours[0] or the gate",
+      mt and not {"top_score", "top_neighbour", "reasons"} & set(mt), str(mt))
+check("neighbour_quality carries only the signal",
+      mt.get("neighbour_quality") == {"signal": "usable"}, str(mt))
+_cap = server._FAMILIARITY_WORDNET_CAP
+server._FAMILIARITY_WORDNET_CAP = 0
+try:
+    r = server.check_compound_familiarity("See on mõtteliin.")
+    check("an unconsulted WordNet is noted",
+          ("`in_wordnet` is null" if r["wordnet_checked"] else "WordNet was unavailable")
+          in (r.get("note") or ""), str(r.get("note")))
+    r = server.check_compound_familiarity("Käisin raamatukogus.")
+    check("no note when every compound is attested anyway", "note" not in r,
+          str(r.get("note")))
+finally:
+    server._FAMILIARITY_WORDNET_CAP = _cap
+_wn = server._wordnet_available
+server._wordnet_available = lambda: False
+try:
+    r = server.check_compound_familiarity("See on mõtteliin.")
+    check("WordNet off: the note says it was unavailable",
+          r["wordnet_checked"] is False
+          and "WordNet was unavailable" in (r.get("note") or ""), str(r.get("note")))
+    r = server.check_compound_familiarity("Käisin raamatukogus.")
+    check("WordNet off, all attested: no note", "note" not in r, str(r.get("note")))
+finally:
+    server._wordnet_available = _wn
 r = server.check_compound_familiarity("Käisin raamatukogus ja koolimajas.")
 check("real compounds analysed", r["compounds_analysed"] == 2)
 check("real compounds NOT suspect", len(r["suspect_compounds"]) == 0,
       str(r["suspect_compounds"]))
+check("attested compounds carry no neighbours",
+      all("neighbours" not in c and "neighbour_quality" not in c
+          for c in r["all_compounds"]), str(r["all_compounds"]))
 # Regression, the false positives that cost the gate its credibility:
 # `lisakäive` (junk top neighbour at 0.670) and `klikkimismäär` (clean
 # neighbourhood, 0.586) are both ordinary business Estonian and both were
@@ -324,8 +367,8 @@ for lemma in ("lisakäive", "klikkimismäär"):
     if c:
         check(f"{lemma} NOT flagged suspect", c["is_suspect"] is False, str(c))
         check(f"{lemma} reported unattested", c["attested"] is False, str(c))
-check("unattested_compounds lists both",
-      len(r["unattested_compounds"]) == 2, str(r["unattested_compounds"]))
+check("unattested_compounds lists both lemmas",
+      r["unattested_compounds"] == ["lisakäive", "klikkimismäär"], str(r["unattested_compounds"]))
 check("suspect_compounds empty", r["suspect_compounds"] == [],
       str(r["suspect_compounds"]))
 # `lisakäive`'s nearest neighbour is a scrape-artifact token, so the
@@ -346,7 +389,7 @@ if tt:
     check("toortõlkeoht reported unattested", tt["attested"] is False, str(tt))
     check("toortõlkeoht has neighbour_quality",
           isinstance(tt.get("neighbour_quality"), dict)
-          and "scrape_junk" in tt["neighbour_quality"]
+          and set(tt["neighbour_quality"]) == {"signal"}
           and tt["neighbour_quality"].get("signal") in ("none", "usable"),
           str(tt))
 r = server.check_compound_familiarity("Eile käisin poes ja ostsin leiba.")
@@ -362,13 +405,16 @@ if sv:
     check("legal term NOT flagged suspect", sv["is_suspect"] is False, str(sv))
     check("legal de-noise marked in quality",
           sv.get("neighbour_quality", {}).get("legal_term") is True, str(sv))
+    check("an attested legal term keeps only that marker",
+          sv.get("neighbour_quality") == {"legal_term": True} and "neighbours" not in sv,
+          str(sv))
 r = server.check_compound_familiarity(
     "See on mõtteliin."
 )
 for c in r["all_compounds"]:
     if c["lemma"] == "mõtteliin":
         check("neighbours list populated", len(c["neighbours"]) > 0, str(c))
-        check("top_score is float", isinstance(c["top_score"], float))
+        check("neighbour score is float", isinstance(c["neighbours"][0]["score"], float))
         break
 
 print("check_abbreviation_hyphenation")

@@ -1294,10 +1294,9 @@ class _HyphenationResult(TypedDict, total=False):
 
 
 class _CompoundFamiliarityResult(TypedDict, total=False):
-    text: str
     compounds_analysed: int
-    suspect_compounds: list[dict]
-    unattested_compounds: list[dict]
+    suspect_compounds: list[str]
+    unattested_compounds: list[str]
     wordnet_checked: bool
     all_compounds: list[dict]
     summary_estonian: str
@@ -1305,7 +1304,6 @@ class _CompoundFamiliarityResult(TypedDict, total=False):
 
 
 class _DomainTermsResult(TypedDict, total=False):
-    text: str
     glossary_size: int
     identifiers_size: int
     suggest_cutoff: float
@@ -2882,7 +2880,8 @@ def _familiarity_verdict(
     so the similarity is under the gate. The only configuration where the
     model has something to say and what it says is bad.
 
-    Subword-echo overlap is COUNTED and surfaced but never triggers: real
+    Subword-echo overlap is COUNTED in the returned quality (the tool
+    shows the caller only its `signal`) but never triggers: real
     sibling compounds share a head morpheme too (tervisekindlustus ↔
     ravikindlustus). Nor does the junk RATIO over the neighbour tail: a
     junky tail behind a real top neighbour describes how sparse that
@@ -2921,9 +2920,10 @@ def _check_compound_familiarity(text: str, *, neighbours: bool = True) -> dict:
 
     For each compound noun (Vabamorf root_tokens of length >= 2) in the
     text, ask two lexicons whether the lemma is attested (the fastText
-    model's 100K-word corpus vocabulary and Estonian WordNet), and look
-    up its fastText nearest neighbours. An attested compound is reported
-    as attested. An unattested one is flagged only in the single
+    model's 100K-word corpus vocabulary and Estonian WordNet). An attested
+    compound is reported as attested, and its neighbours are not searched:
+    they cannot change the verdict. An unattested one carries its fastText
+    nearest neighbours, and is flagged only in the single
     configuration where the model has something to say and what it says
     is bad: its nearest neighbour is a real word and even that similarity
     is under the gate. The decision lives in `_familiarity_verdict` (a
@@ -2937,9 +2937,10 @@ def _check_compound_familiarity(text: str, *, neighbours: bool = True) -> dict:
 
     `neighbours=False` is check_domain_terms' path. That tool reads only
     attestation, so the fastText neighbour search, nearly all of the cost
-    (~0.15 s a compound), is skipped and no verdict is reached. Each
-    compound carries `forms` instead: every lemma reading and surface form
-    the text has for it (see _word_forms).
+    (~0.15 s a compound), is skipped and no verdict is reached. Entries
+    carry no neighbours, and neighbour_quality only for a legal term
+    ({"legal_term": true}). Each compound carries `forms` instead: every
+    lemma reading and surface form the text has for it (see _word_forms).
     """
     _check_text(text)
     Text = _Text()
@@ -2987,20 +2988,15 @@ def _check_compound_familiarity(text: str, *, neighbours: bool = True) -> dict:
         seen.add(lemma)
 
         in_vocab = lemma in vocab
-        try:
-            nearest = kv.most_similar(lemma, topn=8) if neighbours else []
-        except KeyError:
-            nearest = []
-        top_score = float(nearest[0][1]) if nearest else 0.0
 
         # Second attestation source. Specialised legal compounds
         # (õigussuhe, solidaarvõlgnik, abieluvaraleping) are OOV in the
         # general-web fastText vocab and used to be false-flagged as
         # coinages (~15% of legal compounds); a known term of art is real
-        # by definition, and so is a WordNet lemma. The markers are
-        # stamped for every hit, not only where a verdict had to be
-        # rescued, because the caller wants to know which lexicon vouched
-        # for the word.
+        # by definition, and so is a WordNet lemma. Both are marked for
+        # every hit, because the caller wants to know which lexicon
+        # vouched for the word: WordNet in `in_wordnet`, the legal list in
+        # `neighbour_quality.legal_term`.
         legal_term = _is_legal_term(lemma)
         in_wordnet: bool | None = None
         if wn is not None and wordnet_lookups < _FAMILIARITY_WORDNET_CAP:
@@ -3009,37 +3005,45 @@ def _check_compound_familiarity(text: str, *, neighbours: bool = True) -> dict:
                 in_wordnet = bool(wn[lemma])
             except Exception:
                 in_wordnet = None
+        attested = bool(in_vocab or in_wordnet or legal_term)
+
+        # Attested ends the verdict, so the neighbours of an attested
+        # lemma could only be shown, never weighed: the search runs for
+        # unattested lemmas only.
+        search = neighbours and not attested
+        try:
+            nearest = kv.most_similar(lemma, topn=8) if search else []
+        except KeyError:
+            nearest = []
+        top_score = float(nearest[0][1]) if nearest else 0.0
 
         # Verdict (pure, see _familiarity_verdict): attested lemmas pass;
         # an unattested one is flagged only when its nearest neighbour is
         # a real word and that similarity is still under the gate.
-        is_suspect, reasons, quality = _familiarity_verdict(
+        is_suspect, _, quality = _familiarity_verdict(
             in_vocab, top_score, nearest, parts,
             attested_elsewhere=bool(in_wordnet) or legal_term,
         )
-        if legal_term:
-            quality = {**quality, "legal_term": True}
-        if in_wordnet:
-            quality = {**quality, "wordnet": True}
 
-        compounds.append({
+        entry = {
             "word": span.text,
             "lemma": lemma,
             "parts": parts,
             "position": span.start,
             "in_vocab": in_vocab,
             "in_wordnet": in_wordnet,
-            "attested": bool(in_vocab or in_wordnet or legal_term),
-            "top_score": round(top_score, 3),
-            "top_neighbour": nearest[0][0] if nearest else None,
-            "neighbours": [
+            "attested": attested,
+        }
+        if search:
+            entry["neighbours"] = [
                 {"word": n, "score": round(float(s), 3)}
                 for n, s in nearest[:5]
-            ],
-            "neighbour_quality": quality,
-            "is_suspect": is_suspect,
-            "reasons": reasons,
-        })
+            ]
+            entry["neighbour_quality"] = {"signal": quality["signal"]}
+        if legal_term:
+            entry.setdefault("neighbour_quality", {})["legal_term"] = True
+        entry["is_suspect"] = is_suspect
+        compounds.append(entry)
 
     glossary = _domain_glossary_or_empty()
     for c in compounds:
@@ -3048,15 +3052,14 @@ def _check_compound_familiarity(text: str, *, neighbours: bool = True) -> dict:
         if not neighbours:
             c["forms"] = sorted(forms)
 
-    suspects = [c for c in compounds if c["is_suspect"]]
+    suspects = [c["lemma"] for c in compounds if c["is_suspect"]]
     unattested = [c for c in compounds if not c["attested"]]
     listed = sum(1 for c in unattested if c.get("in_domain_glossary"))
 
-    return {
-        "text": text,
+    result = {
         "compounds_analysed": len(compounds),
         "suspect_compounds": suspects,
-        "unattested_compounds": unattested,
+        "unattested_compounds": [c["lemma"] for c in unattested],
         "wordnet_checked": wn is not None,
         "all_compounds": compounds,
         "summary_estonian": (
@@ -3069,48 +3072,19 @@ def _check_compound_familiarity(text: str, *, neighbours: bool = True) -> dict:
                 f"valdkonna sõnastikus." if listed else ""))
             if compounds else "Liitsõnanimisõnu analüüsiks ei leitud."
         ),
-        "note": (
-            "Attestation check for compound nouns. TWO lexicons are asked "
-            "whether the lemma is attested: the fastText model's 100K-word "
-            "corpus vocabulary (`in_vocab`) and Estonian WordNet "
-            "(`in_wordnet`; `wordnet_checked` says whether the resource was "
-            "available). Either one, or a known legal term of art, sets "
-            "`attested: true` and ends the matter. READ `attested` BEFORE "
-            "`is_suspect`. Unattested is the NORMAL state for correct "
-            "specialist vocabulary: `lisakäive`, `klikkimismäär`, "
-            "`koolitoit`, `rehvivahetus`, `hinnakujundus` and "
-            "`otsingureklaam` are every one of them ordinary Estonian and "
-            "every one of them unattested here, because a 100K vocabulary "
-            "holds a fraction of a language that compounds as freely as "
-            "Estonian does. Unattested is NOT evidence that a word was "
-            "invented and on its own is never a reason to rewrite. "
-            "`is_suspect` is narrower: unattested AND the nearest "
-            "neighbour is a real word AND that similarity is still under "
-            "0.55, the one configuration in which the model has something "
-            "to say and what it says is bad ('mõtteliin', 0.536, literal "
-            "English 'train of thought'; real Estonian is 'mõttekäik'). "
-            "When `neighbour_quality.signal` is `none` the nearest "
-            "neighbour is a scrape-artifact token rather than a word: "
-            "fastText fell back to character n-grams and landed in a hub, "
-            "so the score there means nothing in either direction and "
-            "nothing is claimed. RECALL IS LOW BY DESIGN. Coinages whose "
-            "score lands in the band real vocabulary occupies are missed "
-            "on purpose ('toortõlkeoht', 0.571, sits eight thousandths "
-            "from attested 'hinnakujundus', 0.563): the alternative was a "
-            "gate that reported a quarter of ordinary business Estonian as "
-            "invented. Judge a flag yourself from the `neighbours` list: "
-            "coherent related words (tervisekindlustus → ravikindlustus, "
-            "elukindlustus) mean the compound is real. And note what "
-            "similarity cannot see at all: a well-formed but STILTED "
-            "compound ('teadusandmestik', 0.705) passes here, so use "
-            "check_officialese and classify_register for register."
-            + (" This server has a domain glossary, so each compound also "
-               "carries `in_domain_glossary`: true means the organisation "
-               "lists the word, so treat it as real; a listed compound is "
-               "never `is_suspect`. check_domain_terms checks a text "
-               "against the glossary." if glossary else "")
-        ),
     }
+    # WordNet gave no answer for an unattested lemma, so it might still be
+    # there: unavailable, past the lookup cap, or a lookup that failed.
+    if any(c["in_wordnet"] is None and not c["attested"] for c in compounds):
+        result["note"] = (
+            "WordNet was unavailable (`wordnet_checked: false`), so "
+            "`attested` rests on the corpus vocabulary and the legal terms "
+            "list alone." if wn is None else
+            "Where `in_wordnet` is null, WordNet was not asked (it is asked "
+            f"about the first {_FAMILIARITY_WORDNET_CAP} compounds only) or "
+            "the lookup failed, so `attested` there rests on the corpus "
+            "vocabulary and the legal terms list alone.")
+    return result
 
 
 @mcp.tool(annotations=ToolAnnotations(
@@ -3120,44 +3094,27 @@ def _check_compound_familiarity(text: str, *, neighbours: bool = True) -> dict:
     openWorldHint=False,
 ))
 @_counted
-def check_compound_familiarity(text: Annotated[str, Field(description="Estonian text whose compound nouns are checked against the corpus vocabulary and WordNet.")]) -> _CompoundFamiliarityResult:
-    """Attestation check for Estonian compound nouns, evidence attached.
+def check_compound_familiarity(text: Annotated[str, Field(description="Estonian text to check.")]) -> _CompoundFamiliarityResult:
+    """Attestation check for Estonian compound nouns; use it on compounds you
+    coined.
 
-    For each compound noun (root_tokens length >= 2) it reports
-    `attested`: whether the lemma is in the fastText model's 100K-word
-    corpus vocabulary (`in_vocab`), in Estonian WordNet (`in_wordnet`),
-    or on the legal terms-of-art list. It returns the top fastText
-    neighbours with it, a `top_score` similarity and a
-    `neighbour_quality` breakdown.
+    A compound is `attested` when its lemma is in the fastText 100K-word
+    corpus vocabulary (`in_vocab`), Estonian WordNet (`in_wordnet`) or the
+    legal terms list (`neighbour_quality.legal_term`). Read `attested` first:
+    false is normal for correct specialist words, not evidence of invention,
+    and never on its own a reason to rewrite.
 
-    READ `attested` FIRST, and read `attested: false` for what it is: the
-    lemma is outside a 100K-word vocabulary. That is the normal state for
-    correct specialist vocabulary in a language that compounds as freely
-    as Estonian. `lisakäive`, `klikkimismäär`, `koolitoit`,
-    `rehvivahetus`, `hinnakujundus`, `otsingureklaam` are all unattested
-    here and all ordinary Estonian. On its own it is never a reason to
-    rewrite anything.
+    `is_suspect` is narrow: unattested, and the nearest neighbour is a real
+    word scoring under 0.55 (`mõtteliin`). Judge a flag from `neighbours`
+    (unattested entries only): coherent related words mean the word is
+    real. `neighbour_quality.signal: "none"`: the nearest neighbour is
+    scrape junk, so there is no verdict. Recall is low on purpose: some
+    coinages pass, and so does any stilted compound (check register with
+    check_officialese).
 
-    `is_suspect` is the narrow case: unattested AND the nearest neighbour
-    is a real word AND that similarity is under 0.55: the one
-    configuration where the model has something to say and what it says is
-    bad. `mõtteliin` (0.536, literal English "train of thought"; real
-    Estonian `mõttekäik`) flags. Recall is low on purpose: a coinage
-    scoring inside the band real vocabulary occupies is missed rather than
-    bought at the price of flagging ordinary Estonian, so `toortõlkeoht`
-    (0.571) passes.
-
-    When `neighbour_quality.signal` is `none`, the nearest neighbour is a
-    scrape-artifact token rather than a word, the similarity means nothing
-    in either direction, and no verdict is offered.
-
-    When the server has a domain glossary (ESTNLTK_MCP_DOMAIN_GLOSSARY),
-    each compound also carries `in_domain_glossary`. True means the
-    organisation lists the word: treat it as real, and it is never
-    `is_suspect`. To check a text against a glossary of your own, use
-    check_domain_terms.
-
-    Input capped at 100,000 characters.
+    `in_domain_glossary: true` (only with a server glossary): the
+    organisation's own word, so treat it as real. For your own glossary use
+    check_domain_terms. Proper nouns are skipped.
     """
     return _check_compound_familiarity(text)
 
@@ -3330,7 +3287,6 @@ def _domain_mark(compound: dict, forms: set[str], glossary: frozenset[str]) -> d
         compound["in_domain_glossary"] = listed
         if listed and compound.get("is_suspect"):
             compound["is_suspect"] = False
-            compound["reasons"] = []
     return compound
 
 
@@ -3403,9 +3359,11 @@ def _domain_terms_from(compounds: list[dict], terms: frozenset[str],
     Suggestions are the closest glossary lemmas by spelling similarity
     (difflib), not fastText, because a glossary term is usually outside
     the model vocabulary too. They are look-alikes, not synonyms, and never
-    a term the compound is built on. Only the first `cap` reported
-    compounds, within `seconds`, get suggestions and a
-    `contains_glossary_term`; the rest carry None in both."""
+    a term the compound is built on, which `contains_glossary_term` names
+    when there is one. Only the first `cap` reported compounds, within
+    `seconds`, are compared: the rest carry `suggestions` None and no
+    `contains_glossary_term`. With no terms there is nothing to compare,
+    and neither key is set."""
     ranked = sorted(terms)
     deadline = time.monotonic() + seconds
     unlisted = []
@@ -3419,17 +3377,19 @@ def _domain_terms_from(compounds: list[dict], terms: frozenset[str],
             "lemma": lemma,
             "position": c["position"],
             "in_wordnet": c.get("in_wordnet"),
-            "contains_glossary_term": None,
-            "suggestions": None,
         }
-        hits = _look_alikes(lemma, ranked, cutoff, deadline) if len(unlisted) < cap else None
-        if hits is not None:
-            found = _domain_parts_found(lemma, c.get("parts") or [], terms) if terms else set()
-            entry["contains_glossary_term"] = max(sorted(found), key=len) if found else None
-            entry["suggestions"] = [
-                {"term": t, "similarity": round(score, 3)}
-                for score, t in heapq.nlargest(3, [h for h in hits if h[1] not in found])
-            ]
+        if terms:
+            hits = _look_alikes(lemma, ranked, cutoff, deadline) if len(unlisted) < cap else None
+            suggestions = None
+            if hits is not None:
+                found = _domain_parts_found(lemma, c.get("parts") or [], terms)
+                if found:
+                    entry["contains_glossary_term"] = max(sorted(found), key=len)
+                suggestions = [
+                    {"term": t, "similarity": round(score, 3)}
+                    for score, t in heapq.nlargest(3, [h for h in hits if h[1] not in found])
+                ]
+            entry["suggestions"] = suggestions
         unlisted.append(entry)
     return unlisted
 
@@ -3450,7 +3410,7 @@ def _domain_terms_summary(analysed: int, unlisted: list[dict], lists_given: bool
     if not k:
         return ("Kõik leitud liitsõnanimisõnad on sõnavaras, tesauruses, "
                 "õigusterminite loendis või valdkonna loendites.")
-    s = sum(1 for u in unlisted if u["suggestions"])
+    s = sum(1 for u in unlisted if u.get("suggestions"))
     return (
         f"Tuvastati {analysed} liitsõnanimisõna; {k} neist ei leidu ei "
         f"sõnavaras, tesauruses, õigusterminite loendis ega valdkonna "
@@ -3476,52 +3436,34 @@ def _check_domain_terms(text: str, glossary: list[str] | None = None,
             f"not {suggest_cutoff}")
     fam = _check_compound_familiarity(text, neighbours=False)
     unlisted = _domain_terms_from(fam["all_compounds"], terms, allowed, cutoff)
-    return {
-        "text": text,
+    capped = any("suggestions" in u and u["suggestions"] is None for u in unlisted)
+    result = {
         "glossary_size": len(terms),
         "identifiers_size": len(identifiers),
         "suggest_cutoff": cutoff,
         "compounds_analysed": fam["compounds_analysed"],
         "wordnet_checked": fam["wordnet_checked"],
         "unlisted_compounds": unlisted,
-        "suggestions_capped": any(u["suggestions"] is None for u in unlisted),
+        "suggestions_capped": capped,
         "summary_estonian": _domain_terms_summary(
             fam["compounds_analysed"], unlisted, bool(allowed)),
-        "note": (
-            "Compounds that are unattested (not in the corpus vocabulary, "
-            "WordNet or the legal terms list) AND not listed: not in the "
-            "domain glossary (the server's ESTNLTK_MCP_DOMAIN_GLOSSARY file "
-            "plus any `glossary` passed with this call) and not in the "
-            "identifier list (ESTNLTK_MCP_DOMAIN_IDENTIFIERS). A compound is "
-            "listed when any lemma reading of it, or the word as written, "
-            "is on a list. A reported compound is not necessarily coined: "
-            "unattested is the normal state of much ordinary Estonian "
-            "(`vagunisõit` is common, and outside the 100K vocabulary). "
-            "What the report says is only that it is not the "
-            "organisation's word. Where it names something the "
-            "organisation has a term for, or something with an "
-            "identifier, use theirs; otherwise leave it. `suggestions` are glossary "
-            "terms SPELLED alike (difflib similarity of at least "
-            "`suggest_cutoff`), not synonyms: replace the compound only "
-            "when a suggestion names the same thing, and otherwise leave "
-            "it. `contains_glossary_term` names a glossary term the "
-            "compound is built on (`vagunireisitabel` on `vagunireis`). "
-            "That is ordinary Estonian on the organisation's word, so ask "
-            "only whether the thing it names has its own term or "
-            "identifier. Suggestions are computed for the first "
-            f"{_DOMAIN_SUGGEST_CAP} reported compounds, within "
-            f"{_DOMAIN_SUGGEST_SECONDS:g} seconds a call; past either, both "
-            "fields are null and `suggestions_capped` is true. With no "
-            "glossary and no identifier list (`glossary_size` 0, as on the "
-            "hosted server unless you pass `glossary`) this is simply the "
-            "unattested list, and unattested alone is never a reason to "
-            "rewrite (see check_compound_familiarity). WordNet is asked "
-            f"about the first {_FAMILIARITY_WORDNET_CAP} compounds only: "
-            "`in_wordnet: null` on a reported compound means it was not "
-            "asked, so the word may still be ordinary Estonian. Words "
-            "with a capitalised lemma (proper-noun-like) are not examined."
-        ),
     }
+    notes = []
+    if capped:
+        notes.append(
+            f"Suggestions stop after {_DOMAIN_SUGGEST_CAP} reported compounds "
+            f"or {_DOMAIN_SUGGEST_SECONDS:g} seconds, whichever comes first; "
+            "later entries have `suggestions: null`.")
+    if any(u["in_wordnet"] is None for u in unlisted):
+        notes.append(
+            "WordNet was unavailable (`wordnet_checked: false`), so it may "
+            "still list a reported compound." if not fam["wordnet_checked"] else
+            "Where `in_wordnet` is null, WordNet was not asked (it is asked "
+            f"about the first {_FAMILIARITY_WORDNET_CAP} compounds only) or "
+            "the lookup failed, so it may still list that word.")
+    if notes:
+        result["note"] = " ".join(notes)
+    return result
 
 
 @mcp.tool(annotations=ToolAnnotations(
@@ -3532,36 +3474,30 @@ def _check_domain_terms(text: str, glossary: list[str] | None = None,
 ))
 @_counted
 def check_domain_terms(
-    text: Annotated[str, Field(description="Estonian text whose compound nouns are checked against the corpus, WordNet and the domain glossary.")],
-    glossary: Annotated[list[_GlossaryTerm] | None, Field(max_length=MAX_GLOSSARY_TERMS, description="Optional domain lemmas (base forms), used for this call only alongside the server's ESTNLTK_MCP_DOMAIN_GLOSSARY file. Nothing is stored. Up to 1,000 terms of up to 200 characters each.")] = None,
-    suggest_cutoff: Annotated[float | None, Field(ge=_DOMAIN_SUGGEST_CUTOFF_MIN, le=1.0, description="Spelling similarity, 0.4 to 1, that a glossary term needs to be suggested. Defaults to the server's ESTNLTK_MCP_DOMAIN_SUGGEST_CUTOFF, else 0.6.")] = None,
+    text: Annotated[str, Field(description="Estonian text to check.")],
+    glossary: Annotated[list[_GlossaryTerm] | None, Field(max_length=MAX_GLOSSARY_TERMS, description="Domain lemmas (base forms), added to the server's glossary for this call only. Not stored.")] = None,
+    suggest_cutoff: Annotated[float | None, Field(ge=_DOMAIN_SUGGEST_CUTOFF_MIN, le=1.0, description="Minimum spelling similarity for a glossary term to be suggested. Default: the server's setting, else 0.6.")] = None,
 ) -> _DomainTermsResult:
-    """Flags compounds that no lexicon and no domain glossary vouches for.
+    """Reports compounds no lexicon or domain glossary vouches for, in Estonian
+    you wrote about an organisation's own systems.
 
     A compound is reported when it is unattested (see
-    check_compound_familiarity) AND absent from the operator's glossary
-    (ESTNLTK_MCP_DOMAIN_GLOSSARY, one lemma per line), the identifier list
-    (ESTNLTK_MCP_DOMAIN_IDENTIFIERS) and the per-call `glossary`. Any
-    lemma reading of the word, or the word as written, counts as listed.
+    check_compound_familiarity) and absent from the server's glossary and
+    identifier list and your `glossary`. A reported compound is not
+    necessarily coined: it is only not the organisation's word, and may be
+    ordinary Estonian (`vagunisõit` is). Where it names something the
+    organisation has a term or identifier for, use theirs; otherwise leave
+    it.
 
-    Use it on Estonian you wrote about an organisation's own systems. A
-    reported compound is not the organisation's word, which is all the
-    report says: it may be a coinage, or ordinary Estonian the lexicons
-    lack (`vagunisõit` is common). Where it names something the
-    organisation has a term or an identifier for, use theirs.
+    `suggestions` are glossary terms SPELLED alike, not synonyms: use one only
+    if it names the same thing. `contains_glossary_term` is the term the
+    compound is built on (`vagunireisitabel` on `vagunireis`): ordinary
+    Estonian, not to be shortened to the term; ask only whether the thing it
+    names has its own term.
 
-    Each reported compound carries up to three `suggestions`: glossary
-    terms spelled alike, with their similarity. They are look-alikes, not
-    synonyms, so replace the compound only when a suggestion names the
-    same thing. `contains_glossary_term` marks a compound built on a
-    glossary term (`vagunireisitabel` on `vagunireis`), which is ordinary
-    Estonian and is not to be shortened to the term.
-
-    The hosted server has no glossary of its own: pass your terms in
-    `glossary`. With none at all, the report is just the unattested list,
-    which on its own is never a reason to rewrite.
-
-    Input capped at 100,000 characters; `glossary` at 1,000 terms.
+    The hosted server has no glossary: pass yours in `glossary`. Without one
+    this is the unattested list, never on its own a reason to rewrite.
+    Proper nouns are skipped.
     """
     return _check_domain_terms(text, glossary, suggest_cutoff)
 
