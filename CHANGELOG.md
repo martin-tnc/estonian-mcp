@@ -13,7 +13,7 @@ Every caller pays in tokens for what this server sends: the tool list on
 every turn, each result once it is read. This release cuts both without
 dropping what a caller cannot reconstruct. Measured with o200k_base over
 the real MCP protocol, on an 84-word paragraph and one call to each tool:
-the tools/list JSON goes from 13,961 to 8,064 tokens, the server
+the tools/list JSON goes from 13,961 to 8,095 tokens, the server
 instructions from 623 to 469, the results from 33,956 to 11,116 text
 tokens and from 24,346 to 11,131 tokens of compact structuredContent
 (what Claude Code, Codex and VS Code show the model). On ten times that
