@@ -71,10 +71,12 @@ stop.
   always equalled the length of `analyses`. No `indeclinable` means
   false, no `analyses_count` means 1. The result is 57% smaller.
 - **`lemmatize`, `pos_tag` and `analyze_morphology` leave out
-  punctuation** (tokens whose readings are all Vabamorf `Z`, emoticons
-  included). Symbols such as `§` and `€` are `Y` and stay. These lists no
-  longer line up index for index with `tokenize`'s `words`, which still
-  holds every token.
+  punctuation**: tokens whose readings are all Vabamorf `Z` and that hold
+  no letter or digit, so operators (`+`, `=`) and emoticons (`:)`) go too.
+  Symbols such as `§` and `€` are `Y` and stay, and so does a word of 40
+  or more characters, which Vabamorf tags `Z` without analysing. These
+  lists no longer line up index for index with `tokenize`'s `words`,
+  which still holds every token.
 - **`paradigm`**: `summary_estonian` appears only when `forms` is empty,
   and a table in `other_paradigms` carries `form_estonian` only for a
   form code the first table lacks. Only `lemma` and `partofspeech` can

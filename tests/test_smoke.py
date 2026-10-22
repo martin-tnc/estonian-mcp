@@ -63,6 +63,17 @@ tags = {row["word"]: row["partofspeech"] for row in pos}
 check("no punctuation or emoticon entries", not any(t == "Z" for t in tags.values())
       and not {",", ":)", "."} & set(tags), str(pos))
 check("a symbol is kept as Y", tags.get("§") == "Y", str(tags))
+# Vabamorf tags any word of 40+ characters Z without analysing it. It is a
+# word, not punctuation, so the per-token tools must keep it.
+LONG = "andmekaitseinspektsioonipeadirektoriasetäitjale"
+long_text = f"Kiri saadeti {LONG} eile."
+check("a 40+ character word is kept by pos_tag, as Z",
+      {"word": LONG, "partofspeech": "Z"} in server.pos_tag(long_text), long_text)
+check("and by lemmatize", LONG in [r["word"] for r in server.lemmatize(long_text)])
+check("and by analyze_morphology",
+      [r["word"] for r in server.analyze_morphology(LONG)] == [LONG])
+check("while the full stop after it is still left out",
+      "." not in [r["word"] for r in server.lemmatize(long_text)])
 check("'plehku' is X, the verb-bound word", tags.get("plehku") == "X", str(tags))
 
 print("analyze_morphology")

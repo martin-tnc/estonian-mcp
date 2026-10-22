@@ -1087,12 +1087,16 @@ def _first(values: list[Any] | None) -> Any:
 
 
 def _is_punct(span) -> bool:
-    """True when every Vabamorf reading of a morph_analysis span is Z:
-    punctuation, and emoticons such as `:)`, which Vabamorf tags Z too.
-    Symbols (§, €) are Y and are kept. lemmatize, pos_tag and
-    analyze_morphology leave these out; tokenize keeps them."""
+    """True when every Vabamorf reading of a morph_analysis span is Z and
+    the span has no letter or digit: punctuation, operators (+ = /) and
+    emoticons such as `:)`. Vabamorf also tags any word of 40 or more
+    characters Z without analysing it (andmekaitseinspektsiooni...), and
+    that is a word, so it is kept. Symbols (§, €) are Y and are kept.
+    lemmatize, pos_tag and analyze_morphology leave these out; tokenize
+    keeps them."""
     pos = list(span.partofspeech)
-    return bool(pos) and all(p == "Z" for p in pos)
+    return (bool(pos) and all(p == "Z" for p in pos)
+            and not any(ch.isalnum() for ch in span.text))
 
 
 # Olema-forms (plus the negative 'pole' family) that turn a following -tud
@@ -2157,7 +2161,8 @@ def pos_tag(text: Annotated[str, Field(description="Estonian text.")]) -> list[d
     S noun, H proper noun, V verb, A adjective (C comparative, U
     superlative, G indeclinable), P pronoun, D adverb, K adposition, J
     conjunction, N cardinal, O ordinal, I interjection, Y abbreviation or
-    symbol (§, €), X verb-bound word (`plehku`).
+    symbol (§, €), X verb-bound word (`plehku`), Z a word of 40+
+    characters, too long for Vabamorf to analyse.
     """
     _check_text(text)
     Text = _Text()
