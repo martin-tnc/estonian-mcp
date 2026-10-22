@@ -394,6 +394,13 @@ r = server.check_abbreviation_hyphenation("Lugesin MCPst.")
 check("rule_estonian populated",
       all(i.get("rule_estonian") for i in r["issues"]),
       str([i.get("rule_estonian") for i in r["issues"]]))
+# The description promises this scope: any all-capital stem counts, known
+# or not, and a mixed-case stem is never checked. Change both together.
+r = server.check_abbreviation_hyphenation("XYZQst tuli abi.")
+check("unknown all-caps stem flagged",
+      [i["suggestion"] for i in r["issues"]] == ["XYZQ-st"], str(r["issues"]))
+r = server.check_abbreviation_hyphenation("Kasutame SaaSi.")
+check("mixed-case stem not checked", r["issues"] == [], str(r["issues"]))
 
 print("check_object_case")
 # Negation rule
@@ -436,6 +443,21 @@ check("proper noun not flagged", len(prop["issues"]) == 0, str(prop["issues"]))
 r = server.check_object_case("Ma ei söönud leib.")
 check("rule_estonian present on each issue",
       all(i.get("rule_estonian") for i in r["issues"]))
+# The description tells the caller the fix is the partitive of `lemma` in
+# the number `form` shows, so both must be there, plural included.
+r = server.check_object_case("Ma ei söönud leivad.")
+check("plural object: lemma and plural form given",
+      [(i["lemma"], i["form"]) for i in r["issues"]] == [("leib", "pl n")],
+      str(r["issues"]))
+# The description says the negation rule skips a sentence with olema in
+# it, and only that rule. Change both together.
+r = server.check_object_case("Ma pole söönud leib.")
+check("negated olema sentence: negation rule skipped", r["issues"] == [],
+      str(r["issues"]))
+r = server.check_object_case("Ma ei ole armastanud koogi.")
+check("negated olema sentence: partitive-only verb still checked",
+      [i["rule"] for i in r["issues"]] == ["partitive-only-verb"],
+      str(r["issues"]))
 
 print("check_redundancy")
 # The exact case from the field: "Samuti ka suvesärgid" (samuti + ka
@@ -539,6 +561,50 @@ check(
     all(i.get("rule_estonian") for i in r["issues"]),
     str([i.get("rule_estonian") for i in r["issues"]]),
 )
+
+print("issue-list checks: result shape")
+# A result is `issues` plus `summary_estonian`: no echo of the input, no
+# static note. Each issue keeps rule, rule_estonian and suggestion (object
+# case: lemma and form instead); only check_redundancy keeps an
+# `explanation`, because its Estonian reason is not in any other field.
+_SHAPE_CALLS = {
+    "check_compounds": "Kooli maja on suur.",
+    "check_punctuation": "Ma tean et see on hea.",
+    "check_capitalization": "Olen Eestlane.",
+    "check_numbers": "See maksis 3.14 eurot.",
+    "check_redundancy": "Samuti ka. See on kõige optimaalsem. Pikk ajaline periood.",
+    "check_object_case": "Ma ei söönud leib. Ma armastan koogi.",
+    "check_abbreviation_hyphenation": "MCPst tuleb abi.",
+}
+for _name, _text in _SHAPE_CALLS.items():
+    r = getattr(server, _name)(_text)
+    check(f"{_name}: only issues and summary_estonian",
+          set(r) == {"issues", "summary_estonian"}, str(sorted(r)))
+    check(f"{_name}: the sample has issues", bool(r["issues"]), str(r))
+    check(f"{_name}: every issue has rule and rule_estonian",
+          all(i.get("rule") and i.get("rule_estonian") for i in r["issues"]),
+          str(r["issues"]))
+    check(f"{_name}: no suggestion_hint",
+          not any("suggestion_hint" in i for i in r["issues"]), str(r["issues"]))
+    if _name == "check_redundancy":
+        check(f"{_name}: every issue keeps its Estonian explanation",
+              all(i.get("explanation") for i in r["issues"]), str(r["issues"]))
+        check(f"{_name}: all three rules in the sample",
+              {i["rule"] for i in r["issues"]}
+              == {"doubled-also", "double-superlative", "fixed-pleonasm"},
+              str(r["issues"]))
+    else:
+        check(f"{_name}: no explanation",
+              not any("explanation" in i for i in r["issues"]), str(r["issues"]))
+    if _name == "check_object_case":
+        check(f"{_name}: lemma and form on every issue, verb on the verb rule",
+              all(i.get("lemma") and i.get("form") for i in r["issues"])
+              and all(("verb" in i) == (i["rule"] == "partitive-only-verb")
+                      for i in r["issues"]),
+              str(r["issues"]))
+    else:
+        check(f"{_name}: every issue has a suggestion",
+              all(i.get("suggestion") for i in r["issues"]), str(r["issues"]))
 
 print("classify_register")
 formal = server.classify_register(

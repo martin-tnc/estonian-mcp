@@ -1340,10 +1340,8 @@ class _RegisterResult(TypedDict, total=False):
 
 class _CheckResult(TypedDict, total=False):
     """Shared output shape for the issue-list orthography/grammar checks."""
-    text: str
     issues: list[dict]
     summary_estonian: str
-    note: str
 
 
 class _LegaleseResult(TypedDict, total=False):
@@ -2519,32 +2517,16 @@ def _check_capitalization(text: str) -> dict:
 
         rule: str | None = None
         rule_estonian: str | None = None
-        explanation: str | None = None
 
         if lemma_lower in _WEEKDAYS_ET:
             rule = "weekday"
             rule_estonian = "nädalapäev"
-            explanation = (
-                "Estonian weekday names are written with a lowercase initial "
-                "letter mid-sentence (Algustäheortograafia, EKI Reeglid). "
-                "Capitalize only at the start of a sentence."
-            )
         elif lemma_lower in _MONTHS_ET:
             rule = "month"
             rule_estonian = "kuu nimi"
-            explanation = (
-                "Estonian month names are written with a lowercase initial "
-                "letter mid-sentence (Algustäheortograafia, EKI Reeglid). "
-                "Capitalize only at the start of a sentence."
-            )
         elif lemma_lower in _NATIONALITIES_ET:
             rule = "nationality"
             rule_estonian = "rahvuse nimetus"
-            explanation = (
-                "Estonian nationality names (eestlane, soomlane, sakslane, …) "
-                "are lowercase mid-sentence (Algustäheortograafia, EKI Reeglid). "
-                "Capitalize only at the start of a sentence."
-            )
         elif word.lower() in _LANG_ADJECTIVES_ET:
             # Country/language adjectives are lowercase only when used
             # attributively before a culture/language noun. The
@@ -2563,12 +2545,6 @@ def _check_capitalization(text: str) -> dict:
             if next_lemma in _CULTURE_NOUNS_ET:
                 rule = "language-adjective"
                 rule_estonian = "keele- või kultuuriadjektiiv"
-                explanation = (
-                    "Language and culture adjectives derived from country "
-                    "names are lowercase when attributive (eesti keel, vene "
-                    "kultuur, soome saun). Capitalize only as a country "
-                    "proper noun on its own (Eesti, Eesti Vabariik, Eestis)."
-                )
 
         if rule is None:
             continue
@@ -2578,26 +2554,14 @@ def _check_capitalization(text: str) -> dict:
             "position": span.start,
             "rule": rule,
             "rule_estonian": rule_estonian,
-            "explanation": explanation,
             "suggestion": word[0].lower() + word[1:],
         })
 
     return {
-        "text": text,
         "issues": issues,
         "summary_estonian": (
             f"Leiti {len(issues)} algustäheortograafia viga." if issues
             else "Algustäheortograafia probleeme ei leitud."
-        ),
-        "note": (
-            "Heuristic Algustäheortograafia checker: covers the four most "
-            "common AI-generated mistakes (weekdays, months, nationalities, "
-            "and language/culture adjectives before related nouns). Not a "
-            "full EÕS substitute; edge cases like proper-noun brand names "
-            "containing a culture word (e.g. a restaurant called 'Eesti Köök') "
-            "may produce a false positive that the user can ignore. When "
-            "surfacing rule labels in an Estonian reply, USE THE rule_estonian "
-            "FIELD VERBATIM rather than translating `rule` yourself."
         ),
     }
 
@@ -2626,30 +2590,14 @@ def _check_compounds(text: str) -> dict:
                 "position": a.start,
                 "rule": "compound-split",
                 "rule_estonian": "liitsõna kokkukirjutamine",
-                "explanation": (
-                    f"In Estonian, '{joined}' is a single compound word "
-                    f"and should be written together (liitsõnaõigekiri, EKI "
-                    f"Reeglid). The split form is a common AI mistake."
-                ),
                 "suggestion": joined,
             })
 
     return {
-        "text": text,
         "issues": issues,
         "summary_estonian": (
             f"Leiti {len(issues)} liitsõnaõigekirja viga." if issues
             else "Liitsõnaõigekirja probleeme ei leitud."
-        ),
-        "note": (
-            "Heuristic liitsõnaõigekiri checker: flags ~30 common "
-            "AI-generated compound-splits per a hand-curated bigram "
-            "lexicon. NOT exhaustive: Estonian compounding is productive "
-            "and many valid compounds aren't in the lexicon. Treat hits "
-            "as high-confidence (likely real errors); absence of hits is "
-            "NOT proof of compound correctness. When surfacing rule "
-            "labels in an Estonian reply, USE THE rule_estonian FIELD "
-            "VERBATIM rather than translating `rule` yourself."
         ),
     }
 
@@ -2661,20 +2609,12 @@ def _check_compounds(text: str) -> dict:
     openWorldHint=False,
 ))
 @_counted
-def check_compounds(text: Annotated[str, Field(description="Estonian text to check for wrongly split compound words.")]) -> _CheckResult:
-    """Heuristic Estonian compound-word check (liitsõnaõigekiri).
+def check_compounds(text: Annotated[str, Field(description="Estonian text.")]) -> _CheckResult:
+    """Flags compounds wrongly written as two words (liitsõnaõigekiri):
+    `kooli maja` → `koolimaja`.
 
-    Scans for common AI-generated splits of words that should be written
-    as a single compound: `kooli maja` (wrong) → `koolimaja` (right),
-    `nädala vahetus` (wrong) → `nädalavahetus` (right), etc. Uses a
-    curated bigram lexicon (~30 entries covering the highest-frequency
-    AI mistakes); not a full liitsõnaõigekiri solver.
-
-    Phase-1 limitations: only catches the bigrams in the lexicon.
-    Estonian compounding is highly productive and most valid compounds
-    aren't enumerated here. Treat hits as high-confidence; absence of
-    hits does not prove the compound writing is correct everywhere.
-    Input capped at 100,000 characters.
+    Matches a curated list of about 30 common splits, so a hit is reliable
+    but most compounds are not covered.
     """
     return _check_compounds(text)
 
@@ -2703,32 +2643,14 @@ def _check_punctuation(text: str) -> dict:
             "position": span.start,
             "rule": "comma-before-clause-conjunction",
             "rule_estonian": "koma alistava sidesõna ees",
-            "explanation": (
-                f"Estonian punctuation rules require a comma before "
-                f"clause-introducing conjunctions like '{span.text}'. "
-                f"Insert a comma between the previous word and "
-                f"'{span.text}'."
-            ),
             "suggestion": f", {span.text}",
         })
 
     return {
-        "text": text,
         "issues": issues,
         "summary_estonian": (
             f"Leiti {len(issues)} kirjavahemärgiviga." if issues
             else "Kirjavahemärgivigu ei leitud."
-        ),
-        "note": (
-            "Heuristic comma checker: catches missing commas before "
-            "the most common subordinating conjunctions (et, kuna, sest, "
-            "kuigi, kuid, vaid, nagu, mistõttu, millepärast, kuhu). "
-            "Excludes `kui` / `mis` / `kes` because their function is "
-            "context-dependent (kui = than/when, mis = which/what) and "
-            "naive flagging produces too many false positives. NOT a full "
-            "Estonian punctuation rule engine: listing comma, "
-            "apposition comma, and dash/colon rules are out of scope for "
-            "phase 1. Quote `rule_estonian` verbatim in Estonian replies."
         ),
     }
 
@@ -2740,20 +2662,14 @@ def _check_punctuation(text: str) -> dict:
     openWorldHint=False,
 ))
 @_counted
-def check_punctuation(text: Annotated[str, Field(description="Estonian text to check for missing commas before subordinating conjunctions.")]) -> _CheckResult:
-    """Heuristic Estonian punctuation check: comma-before-clause rule.
+def check_punctuation(text: Annotated[str, Field(description="Estonian text.")]) -> _CheckResult:
+    """Flags a missing comma before et, kuna, sest, kuigi, kuid, vaid, nagu,
+    mistõttu, millepärast or kuhu.
 
-    Flags missing commas before subordinating conjunctions where Estonian
-    rules require one: et (that/in order to), kuna (because), sest
-    (because), kuigi (although), kuid (but), vaid (rather), nagu (like),
-    mistõttu (because of which), millepärast, kuhu.
-
-    Phase-1 limitations: only the comma-before-clause-conjunction rule
-    is covered. `kui`, `mis`, `kes` are deliberately excluded because
-    their function is contextual (kui = than/as in comparisons doesn't
-    need a comma). Listing commas, apposition commas, dash and colon
-    rules: all out of scope for phase 1. Input capped at 100,000
-    characters.
+    Not checked: kui, mis, kes (their comma depends on meaning), list and
+    apposition commas, dashes, colons. In nii et, ilma et and selleks et the
+    comma goes before the pair, not before et; nagu in a verbless
+    comparison (tugev nagu karu) takes none.
     """
     return _check_punctuation(text)
 
@@ -2826,11 +2742,6 @@ def _check_numbers(text: str) -> dict:
             "position": m.start(),
             "rule": "decimal-separator",
             "rule_estonian": "kümnenduskoma",
-            "explanation": (
-                "Estonian uses a comma as the decimal separator, not a "
-                "period (e.g. 3,14 not 3.14). EKI Reeglid: numbrite "
-                "õigekirjutus."
-            ),
             "suggestion": corrected,
         })
 
@@ -2845,29 +2756,14 @@ def _check_numbers(text: str) -> dict:
             "position": m.start(),
             "rule": "thousands-separator",
             "rule_estonian": "tuhandeliste eraldaja",
-            "explanation": (
-                "Estonian uses a non-breaking space (or thin space) as "
-                "the thousands separator, not a comma. EKI Reeglid: "
-                "numbrite õigekirjutus."
-            ),
             "suggestion": corrected,
         })
 
     return {
-        "text": text,
         "issues": issues,
         "summary_estonian": (
             f"Leiti {len(issues)} numbrite õigekirjutuse viga." if issues
             else "Numbrite õigekirjutuse vigu ei leitud."
-        ),
-        "note": (
-            "Heuristic number-writing checker: covers decimal-separator "
-            "(period vs comma) and thousands-separator (comma vs space) "
-            "rules. Spell-out-vs-digits guidance (Estonian convention: "
-            "spell out 1-10 in running text) is out of scope for phase 1 "
-            "because it requires context awareness (years, dates, "
-            "measurements stay as digits). Quote `rule_estonian` "
-            "verbatim in Estonian replies."
         ),
     }
 
@@ -2879,19 +2775,15 @@ def _check_numbers(text: str) -> dict:
     openWorldHint=False,
 ))
 @_counted
-def check_numbers(text: Annotated[str, Field(description="Estonian text to check for number-formatting (decimal comma, thousands space).")]) -> _CheckResult:
-    """Heuristic Estonian number-writing check.
+def check_numbers(text: Annotated[str, Field(description="Estonian text.")]) -> _CheckResult:
+    """Flags English-style number separators (numbrite õigekirjutus):
+    - `decimal-separator`: 3.14 → 3,14.
+    - `thousands-separator`: 1,500,000 → 1 500 000 (ideally non-breaking
+      spaces; `suggestion` has plain ones).
 
-    Flags two clear-cut cases per EKI Reeglid:
-    - Decimal separator: Estonian uses a comma (3,14), not a period (3.14).
-    - Thousands separator: Estonian uses a space (1 000 000), not a
-      comma (1,000,000).
-
-    Phase-1 limitations: spell-out-vs-digits guidance (the
-    one-to-ten-spelled-out convention) is intentionally not implemented.
-    It requires distinguishing measurements, dates, years, and lists
-    from running prose, and naive flagging produces too many false
-    positives. Input capped at 100,000 characters.
+    No context is read: times, dates and section numbers (10.30, 14.05,
+    3.2) and three-place decimals (1,250 kg) can be flagged too. Spelling
+    out small numbers is not checked.
     """
     return _check_numbers(text)
 
@@ -2903,32 +2795,17 @@ def check_numbers(text: Annotated[str, Field(description="Estonian text to check
     openWorldHint=False,
 ))
 @_counted
-def check_capitalization(text: Annotated[str, Field(description="Estonian text to check for capitalization errors (Algustäheortograafia).")]) -> _CheckResult:
-    """Heuristic Estonian capitalization checker (Algustäheortograafia).
+def check_capitalization(text: Annotated[str, Field(description="Estonian text.")]) -> _CheckResult:
+    """Flags words wrongly capitalized mid-sentence (algustäheortograafia):
+    - `weekday`, `month`, `nationality`: lowercase except at sentence
+      start (esmaspäeval, jaanuaris, eestlane).
+    - `language-adjective`: a country name before a language or culture
+      noun is lowercase (eesti keel, vene kultuur). On its own it is the
+      country (Eesti, Eestis) and is not flagged.
 
-    Scans Estonian text for the most common AI-generated capitalization
-    errors per EKI's Reeglid:
-
-    - Weekday names capitalized mid-sentence (Esmaspäeval → esmaspäeval)
-    - Month names capitalized mid-sentence (Jaanuaris → jaanuaris)
-    - Nationality names capitalized mid-sentence (Eestlane → eestlane)
-    - Country/language adjectives capitalized before a culture or
-      language noun (Eesti keel → eesti keel; Eesti köök → eesti köök).
-      The bare capitalized form on its own (Eesti, Eestis) is left
-      alone because it's a valid country proper-noun usage.
-
-    Sentence-initial capitalization is always allowed. All-caps
-    acronyms are ignored. Returns each issue with rule code, an
-    Estonian rule label (`rule_estonian`: quote this verbatim in
-    Estonian replies, don't translate the English `rule`), a
-    user-facing explanation, and a suggested correction. Input capped
-    at 100,000 characters.
-
-    PHASE-1 LIMITATION: this is a lexicon-based heuristic, not a full
-    EÕS implementation. Compound-word capitalization, punctuation
-    rules, and hyphenation are NOT covered by this tool (separate
-    check_compounds / check_punctuation / check_hyphenation tools may
-    follow).
+    Sentence-initial words and all-caps acronyms are skipped. A hit that
+    opens a line, list item or quotation, or sits in a proper name (Eesti
+    Keele Instituut), is usually false.
     """
     return _check_capitalization(text)
 
@@ -3733,33 +3610,14 @@ def _check_abbreviation_hyphenation(text: str) -> dict:
             "position": span.start,
             "rule": "abbreviation-case-ending-hyphen",
             "rule_estonian": "lühendi käändelõpu sidekriips",
-            "explanation": (
-                f"In Estonian, case endings on Latin-letter abbreviations "
-                f"are separated by a hyphen (EKI Reeglid: lühendi-"
-                f"ortograafia). '{word}' should be written as "
-                f"'{suggestion}'."
-            ),
             "suggestion": suggestion,
         })
 
     return {
-        "text": text,
         "issues": issues,
         "summary_estonian": (
             f"Leiti {len(issues)} lühendi käändelõpu sidekriipsu viga." if issues
             else "Lühendiortograafia probleeme ei leitud."
-        ),
-        "note": (
-            "Heuristic checker for the EKI Reeglid rule that case "
-            "endings on abbreviations are hyphen-separated (MCP-st, "
-            "API-ga, OÜ-le). Uses Vabamorf's Y-pos tag + case form "
-            "analysis, so we only flag tokens Vabamorf actually "
-            "recognised as abbreviations carrying a case ending. "
-            "Single-letter endings on short capital sequences are not "
-            "specially filtered: relies on Vabamorf to know whether "
-            "'APIs' is an abbreviation plus inessive ending or just "
-            "an English plural. Quote rule_estonian verbatim in "
-            "Estonian replies."
         ),
     }
 
@@ -3771,19 +3629,13 @@ def _check_abbreviation_hyphenation(text: str) -> dict:
     openWorldHint=False,
 ))
 @_counted
-def check_abbreviation_hyphenation(text: Annotated[str, Field(description="Estonian text to check for abbreviation case-ending hyphenation (MCPst → MCP-st).")]) -> _CheckResult:
-    """Heuristic check for the EKI Reeglid rule that case endings on
-    Latin-letter / all-caps abbreviations are separated by a hyphen.
+def check_abbreviation_hyphenation(text: Annotated[str, Field(description="Estonian text.")]) -> _CheckResult:
+    """Flags a case ending on an abbreviation written without a hyphen:
+    MCPst → MCP-st, APIga → API-ga, OÜle → OÜ-le.
 
-    Catches the common AI mistake of writing `MCPst`, `APIga`, `OÜle`
-    instead of `MCP-st`, `API-ga`, `OÜ-le`. Uses Vabamorf's POS+form
-    analysis to identify tokens recognised as abbreviations carrying a
-    case ending; only flags those that aren't already hyphenated.
-
-    Phase-1 scope: matches what Vabamorf tags as `Y` (abbreviation).
-    Custom acronyms Vabamorf doesn't know (your brand acronym, niche
-    industry shorthand) won't be flagged because Vabamorf doesn't see
-    them as abbreviations. Input capped at 100,000 characters.
+    Any all-capital stem counts, known or not; mixed-case ones (SaaS, PhD,
+    iOS) are not checked. An English plural looks like a case ending
+    (APIs → API-s): check such hits.
     """
     return _check_abbreviation_hyphenation(text)
 
@@ -3888,14 +3740,6 @@ def _check_object_case(text: str) -> dict:
                     "form": form,
                     "rule": "negation-requires-partitive",
                     "rule_estonian": "eitus nõuab osastavat",
-                    "explanation": (
-                        f"Estonian negation (ei/pole/ära/…) requires "
-                        f"direct objects in the partitive case. "
-                        f"'{word}' is in {form!r} (nominative/genitive); "
-                        f"a partitive form of '{lemma}' is likely "
-                        f"expected here."
-                    ),
-                    "suggestion_hint": f"consider partitive form of '{lemma}'",
                 })
             elif partitive_verb:
                 issues.append({
@@ -3906,30 +3750,13 @@ def _check_object_case(text: str) -> dict:
                     "verb": partitive_verb,
                     "rule": "partitive-only-verb",
                     "rule_estonian": "osastavat nõudev tegusõna",
-                    "explanation": (
-                        f"The verb '{partitive_verb}' takes its direct "
-                        f"object in the partitive case. '{word}' is in "
-                        f"{form!r} (nominative/genitive); a partitive "
-                        f"form of '{lemma}' is likely expected."
-                    ),
-                    "suggestion_hint": f"consider partitive form of '{lemma}'",
                 })
 
     return {
-        "text": text,
         "issues": issues,
         "summary_estonian": (
             f"Leiti {len(issues)} käändevigade kahtlust." if issues
             else "Käändevigade kahtlust ei leitud."
-        ),
-        "note": (
-            "Heuristic phase-1 object-case checker: no syntactic parser, "
-            "so we can't distinguish subjects from objects. Flags nouns "
-            "in nominative/genitive in sentences with negation or "
-            "partitive-only verbs. Subjects of those sentences may be "
-            "false-positive flags. Treat as 'worth a second look', not "
-            "authoritative corrections. When surfacing rule labels in "
-            "Estonian replies, quote rule_estonian verbatim."
         ),
     }
 
@@ -3941,27 +3768,17 @@ def _check_object_case(text: str) -> dict:
     openWorldHint=False,
 ))
 @_counted
-def check_object_case(text: Annotated[str, Field(description="Estonian text to check for direct-object case errors under negation and partitive-governing verbs.")]) -> _CheckResult:
-    """Heuristic Estonian object-case-government check.
+def check_object_case(text: Annotated[str, Field(description="Estonian text.")]) -> _CheckResult:
+    """Flags a direct object in the wrong case (käändeõpetus): a common noun
+    in nominative or genitive (`form`) after
+    - `negation-requires-partitive`: negation (ei söönud leib → leiba), or
+    - `partitive-only-verb`: `verb`, one of nine verbs such as armastama,
+      vajama and ootama that always take a partitive object.
 
-    Catches the single biggest class of confidently-wrong Estonian that
-    AI agents produce: direct objects in the wrong case after negation
-    or after partitive-governing verbs.
-
-    Two rules in phase 1:
-    - **Negation → partitive**: any sentence containing 'ei', 'pole',
-      'ära', 'ärge', 'ärgu', 'ärgem', or 'mitte' must have direct
-      objects in partitive. Flags nominative / genitive nouns.
-    - **Partitive-only verbs**: the verbs `armastama`, `vihkama`,
-      `vajama`, `soovima`, `ootama`, `austama`, `kartma`, `puudutama`,
-      `tundma` always take partitive direct objects. Flags any noun
-      in nominative/genitive in the same sentence.
-
-    Phase-1 limitation: no syntactic parser, so we can't perfectly
-    distinguish subject from object. Subjects in negation/partitive-verb
-    sentences may be flagged as false positives. Treat hits as "worth a
-    second look", not authoritative. Proper nouns are skipped. Input
-    capped at 100,000 characters.
+    The negation rule skips any sentence containing olema (pole, ei ole,
+    pole näinud). The fix is the partitive of `lemma` in the number `form`
+    shows; take it from paradigm. With no parser, a hit may be a subject or
+    an adverbial, so treat it as worth a second look.
     """
     return _check_object_case(text)
 
@@ -4041,20 +3858,10 @@ def _check_redundancy(text: str) -> dict:
                 })
 
     return {
-        "text": text,
         "issues": issues,
         "summary_estonian": (
             f"Leiti {len(issues)} liiasuse (pleonasmi) kahtlust."
             if issues else "Liiasust ei tuvastatud."
-        ),
-        "note": (
-            "Heuristic pleonasm checker. Flags high-confidence semantic "
-            "doubling: adjacent 'also' particles (samuti ka), double "
-            "superlatives (kõige optimaalsem), and a small set of fixed "
-            "redundant phrases. Deliberately conservative; it does NOT "
-            "catch every redundancy a native speaker would hear, so "
-            "absence of flags is not proof the text is tight. Quote "
-            "rule_estonian verbatim in Estonian replies."
         ),
     }
 
@@ -4066,26 +3873,17 @@ def _check_redundancy(text: str) -> dict:
     openWorldHint=False,
 ))
 @_counted
-def check_redundancy(text: Annotated[str, Field(description="Estonian text to check for pleonasm / redundant word pairs.")]) -> _CheckResult:
-    """Heuristic Estonian pleonasm / semantic-doubling check.
+def check_redundancy(text: Annotated[str, Field(description="Estonian text.")]) -> _CheckResult:
+    """Flags redundant doubling (liiasus, pleonasm):
+    - `doubled-also`: two "also" particles together (samuti ka, ka samuti,
+      ühtlasi ka); keep one.
+    - `double-superlative`: kõige before an absolute adjective (kõige
+      optimaalsem, "most optimal"); drop kõige.
+    - `fixed-pleonasm`: a short curated list (ajaline periood, väike
+      nüanss, üldine konsensus).
 
-    Flags phrasing that is grammatically valid but reads redundant to a
-    native speaker, the class of error AI agents produce when they
-    stack synonyms. Phase-1 rules, all high-precision:
-
-    - **Doubled 'also' particles**: `samuti ka`, `ka samuti`,
-      `ühtlasi ka`. Both words mean "also/too", so together they're a
-      tautology. (This is the exact `samuti ka suvesärgid` case.)
-    - **Double superlative**: `kõige` before an already-absolute
-      adjective (`optimaalne`, `ideaalne`, `maksimaalne`, `täiuslik`,
-      `ainus`, …), like English "most optimal". Lemma-matched, so all
-      inflected forms count.
-    - **Fixed pleonasm phrases**: a small curated set (`ajaline
-      periood`, `väike nüanss`, `üldine konsensus`, …).
-
-    Conservative by design: it catches the obvious, high-confidence
-    cases, not every redundancy. Absence of flags is not proof the
-    prose is tight. Input capped at 100,000 characters.
+    Each issue's `explanation` gives the reason in Estonian. Conservative:
+    it misses much redundancy a native speaker would hear.
     """
     return _check_redundancy(text)
 

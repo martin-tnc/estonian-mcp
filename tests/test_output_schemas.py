@@ -183,6 +183,16 @@ async def run() -> None:
           [r["text"] for r in structured["result"]] == ["maailmm"]
           and structured["result"][0]["spelling"] is False, str(structured))
 
+    print("the issue-list checks advertise only what they return")
+    # They dropped the input echo `text` and the static `note`; a key left
+    # in _CheckResult would still be advertised to every client.
+    for name in ("check_compounds", "check_punctuation", "check_capitalization",
+                 "check_numbers", "check_redundancy", "check_object_case",
+                 "check_abbreviation_hyphenation"):
+        props = set((tools[name].outputSchema or {}).get("properties", {}))
+        check(f"{name} outputSchema is issues and summary_estonian",
+              props == {"issues", "summary_estonian"}, str(sorted(props)))
+
     print("advertised schemas carry no title noise")
 
     def titles(node, path=""):
