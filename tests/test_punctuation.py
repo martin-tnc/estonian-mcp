@@ -17,7 +17,12 @@ nagu-tarind, koma nihkumine; õigekirja põhireeglid, reegel 44):
    one of those.
 
 3. A CONJUNCTION BEFORE A SUBORDINATOR TAKES THE COMMA ITSELF: `..., et
-   tuleb ja et toob kooki`, never `ja, et`.
+   tuleb ja et toob kooki`, never `ja, et`. Where the conjunction joins
+   main clauses the comma goes before it (Tahtsin helistada, aga et oli
+   hilja, kirjutasin kirja; Ilm oli ilus, ja kuna oli puhkus, ...).
+
+Every flag's suggestion, applied, must give text the tool accepts: the
+tool once suggested `lihtsalt ilma, et` and then flagged its own output.
 
 Run via:
 
@@ -55,7 +60,8 @@ def clean(text: str) -> None:
 def one(text: str, word: str, suggestion: str, at: str | None = None,
         rule: str = "comma-before-clause-conjunction") -> None:
     """Exactly one issue, on `word`, starting where `at` (default `word`)
-    first occurs in the text."""
+    first occurs in the text, and the text with the suggestion applied
+    passes."""
     got = issues(text)
     want_pos = text.index(at if at is not None else word)
     check(f"one flag on {word!r} -> {suggestion!r}: {text}",
@@ -66,6 +72,12 @@ def one(text: str, word: str, suggestion: str, at: str | None = None,
           and got[0]["rule"] == rule
           and bool(got[0].get("rule_estonian")),
           str(got))
+    if len(got) == 1:
+        pos, length = got[0]["position"], len(got[0]["word"])
+        head = text[:pos].rstrip() if suggestion.startswith(",") else text[:pos]
+        fixed = head + got[0]["suggestion"] + text[pos + length:]
+        again = issues(fixed)
+        check(f"  its fix passes: {fixed}", again == [], str(again))
 
 
 print("a comma before the whole connective is right")
@@ -209,6 +221,140 @@ one("Ta oli haige mistõttu ta ei tulnud.", "mistõttu", ", mistõttu")
 one("Ta oli haige millepärast ta ei tulnud.", "millepärast", ", millepärast")
 one("Ma ei tea kuhu ta läks.", "kuhu", ", kuhu")
 one("Ta oli nii väsinud et jäi magama.", "et", ", et")
+
+print("a nagu clause whose verb is also a noun takes the comma")
+# võis (või), soovis (soov), palus (palu), sõnas, lisas, selgus: the verb
+# counts after a subject or adverb, or before an infinitive.
+one("Kõik läks nagu võis arvata.", "nagu", ", nagu")
+one("Hind langes nagu võis eeldada.", "nagu", ", nagu")
+one("Raport valmis nagu tellija soovis.", "nagu", ", nagu")
+one("Tegin nagu ta palus.", "nagu", ", nagu")
+one("Tee nii nagu ema palus.", "nagu", ", nagu")
+one("Olukord on keeruline nagu peaminister sõnas.", "nagu", ", nagu")
+one("Hinnad tõusevad nagu juhatuse esimees lisas.", "nagu", ", nagu")
+one("Ta oli süütu nagu hiljem selgus.", "nagu", ", nagu")
+# The noun of a comparison stays a noun, even where the sentence
+# analysis reads it as a verb (ahju tuli = came into the oven).
+for text in (
+    "Ta oli kuum nagu ahju tuli.",
+    "Ta on külm nagu talvine jää.",
+    "Maja põles nagu tuli lõkkes.",
+    "Ta nagu tema vend tuli hilja.",
+    "Eesti nagu Läti tuli kriisiga toime.",
+):
+    clean(text)
+
+print("a nagu clause before the main verb takes the comma")
+one("See projekt nagu me teame on hilinenud.", "nagu", ", nagu")
+one("Eesti majandus nagu analüütikud ennustasid kasvas kaks protsenti.", "nagu", ", nagu")
+one("Meie meeskond nagu te kindlasti teate töötab kaugtööl.", "nagu", ", nagu")
+one("Tallinna Vesi nagu ettevõte teatas tõstab hindu.", "nagu", ", nagu")
+one("Ta nagu ma juba ütlesin on väga tark.", "nagu", ", nagu")
+for text in (
+    "Linnud nagu lennukid lendavad kõrgel.",
+    "Mari nagu Jüri ei ole kodus.",
+    "Mari nagu Jüri ei tea midagi.",
+):
+    clean(text)
+
+print("a comparative kui does not hide the main verb")
+one("Tulemused olid paremad kui eelmisel aastal nagu juhataja märkis.", "nagu", ", nagu")
+one("Ta töötas rohkem kui keegi teine nagu ülemus ütles.", "nagu", ", nagu")
+# A kui that opens a clause still ends the main clause.
+clean("Ta oli kodus kui lapsed nagu tavaliselt koolist tulid.")
+
+print("a sentence-initial noun that is also an imperative")
+one("„Tee nagu tahad,“ ütles ema.", "nagu", ", nagu")
+one("Tule nagu saad.", "nagu", ", nagu")
+for text in (
+    "Tee nagu kohv sisaldab kofeiini.",
+    "Muna nagu piim sisaldab palju valku.",
+    "Luba nagu iga teine dokument kehtib viis aastat.",
+):
+    clean(text)
+
+print("ilma the noun: an adjective before it, or a verb such as ootama")
+for text in (
+    "Lootsime sooja ilma, et saaks ujuma minna.",
+    "Loodame sooja ilma, et lapsed saaksid õues mängida.",
+    "Ootasime külma ilma, et jää kannaks.",
+    "Ootasime ilma, et minna randa.",
+):
+    clean(text)
+one("Lootsime sooja ilma et saaks ujuma minna.", "et", ", et")
+# The disambiguation reads these ilma as the noun; nothing else does.
+one("Ta maksis arve ära ilma, et oleks seda kontrollinud.", "ilma, et", ", ilma et",
+    rule="no-comma-inside-conjunction")
+one("ILMA, ET KEEGI TEAKS, LAHKUS TA.", "ILMA, ET", "ILMA ET",
+    rule="no-comma-inside-conjunction")
+# A predicative adjective, or one after midagi, does not make ilma a noun.
+one("Ta oli vaba ilma, et keegi teda kontrolliks.", "ilma, et", ", ilma et",
+    rule="no-comma-inside-conjunction")
+one("Ta tahtis midagi uut ilma, et peaks maksma.", "ilma, et", ", ilma et",
+    rule="no-comma-inside-conjunction")
+
+print("a particle before a closed connective does not split it")
+one("Ta lahkus lihtsalt ilma et oleks hüvasti jätnud.", "ilma et", ", ilma et")
+one("Ta tuli ikka olgugi et oli haige.", "olgugi et", ", olgugi et")
+one("Taotluse saab esitada ka ilma et peaks kontorisse tulema.", "ilma et", ", ilma et")
+for text in (
+    "Taotluse saab esitada, ka ilma et peaks kontorisse tulema.",
+    # A comma before a focus particle sets off the clause.
+    "Ma ei tulnud puhkama, vaid et aidata.",
+    "Ta tegi seda, eriti kuna oli aega.",
+):
+    clean(text)
+
+print("ainult et after a verb that takes no et clause is the connective")
+one("Kõik töötab ainult et ekraan vilgub.", "ainult et", ", ainult et")
+one("Kõik töötab hästi ainult et ekraan vilgub.", "ainult et", ", ainult et")
+one("Ma tahan tegelikult ainult et sa tuleksid.", "et", ", et")
+one("Mul on vaja ainult et sa tuleksid.", "et", ", et")
+
+print("on ükskõik, kuhu past an adverb; kuhu tahes opens no clause")
+one("Mulle on täiesti ükskõik kuhu me sõidame.", "kuhu", ", kuhu")
+one("Mul on ju ükskõik kuhu sa lähed.", "kuhu", ", kuhu")
+one("Mul on päris ükskõik kuhu raha kulub.", "kuhu", ", kuhu")
+one("Mul pole ükskõik kuhu sa lähed.", "kuhu", ", kuhu")
+one("Ma järgnen sulle kuhu tahes sa lähed.", "kuhu", ", kuhu")
+for text in (
+    "Ma oleksin ükskõik kuhu läinud.",
+    "Võid istuda kuhu tahes.",
+    "Võid minna kuhu iganes.",
+    # EKI: the idiom takes no comma.
+    "Ta valetab nii et suu suitseb.",
+):
+    clean(text)
+
+print("a coordinator joining main clauses takes the subordinate clause's comma")
+one("Tahtsin helistada aga et oli hilja kirjutasin kirja.", "aga et", ", aga et")
+one("Ma tahtsin tulla aga kuna oli hilja jäin koju.", "aga kuna", ", aga kuna")
+one("Lubasime tulla aga kuigi proovisime ei jõudnud me kohale.", "aga kuigi", ", aga kuigi")
+one("Ta lubas tulla ent kuna jäi haigeks ei tulnud.", "ent kuna", ", ent kuna")
+one("Tahtsin helistada aga kuna oli hilja, kirjutasin kirja.", "aga kuna", ", aga kuna")
+one("Ilm oli ilus ja kuna oli puhkus läksime randa.", "ja kuna", ", ja kuna")
+one("Ta ütles, et tuleb aga et ei too kooki.", "aga et", ", aga et")
+# aga the particle (= however): the comma stays before et.
+one("Hiljem selgus aga et ta oli haige.", "et", ", et")
+one("Mine aga kuhu tahad.", "kuhu", ", kuhu")
+for text in (
+    "Hiljem selgus aga, et ta oli haige.",
+    "Tahtsin helistada, aga et oli hilja, kirjutasin kirja.",
+    "Ilm oli ilus, ja kuna oli puhkus, läksime randa.",
+    # A reporting verb after the clauses is no second main clause.
+    "Valitsus otsustas, et maksud tõusevad ja et toetused kahanevad, teatas minister.",
+):
+    clean(text)
+
+print("a word after an opening quotation mark starts a sentence")
+for text in (
+    "Ta küsis: „Kuhu sa lähed?“",
+    'Ta küsis: "Kuhu sa lähed?"',
+    "„Et oleks selge, koosolek jääb ära,“ ütles juht.",
+    "Ta ütles: „Nii et homme ei tule keegi.“",
+    "«Kuna sajab, jääme koju,» ütles ta.",
+):
+    clean(text)
 
 print("the description no longer documents the fixed misfires")
 doc = server.check_punctuation.__doc__ or ""
