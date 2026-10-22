@@ -1,4 +1,4 @@
-"""Rebuild `inflection_et` with the 13 EKI-adjudicated rows corrected.
+"""Rebuild `inflection_et` with the 13 rows that contradict EKI corrected.
 
 WHY A PATCH AND NOT A CORRECTED COPY
 ------------------------------------

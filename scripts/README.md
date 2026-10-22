@@ -141,7 +141,8 @@ All 13 residual misses are gold rows that contradict EKI: 12 decline a
 `-tud` participle that is invariant as a pre-modifier, 1 leaves a `-v`
 participle undeclined where it must agree. They are recorded with the
 rule cited in [`../data/inflection_et_eki_disputes.json`](../data/inflection_et_eki_disputes.json),
-so the script also reports an **EKI-adjudicated 100% / 100%**. Each
+so the script also reports the score with those 13 corrected: **100% /
+100%**. Each
 dispute is re-checked against the live dataset before it counts, and is
 reported as stale (and awarded nothing) if the data changes upstream.
 
@@ -168,7 +169,8 @@ uv run python scripts/eval_coverage.py 500   # sample size
   via `synonyms`). Latest: **~65%** on a 500 sample.
 
 The honest takeaway: deterministic morphology (`inflection_et`,
-99.1%/99.1% raw, 100% EKI-adjudicated) is our home turf; full-sentence
+99.1%/99.1% raw, 100% once the 13 rows that contradict EKI are
+corrected) is our home turf; full-sentence
 correction and free-text definitions are only partially served by
 detector/lookup tools.
 

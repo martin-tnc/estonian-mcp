@@ -40,9 +40,9 @@ of images is not one, however natural it sounds in ML jargon).
 > engine scores **99.1% first-candidate / 99.1% any-candidate** over
 > 1,400 items (first-candidate is 96.6% without the optional fastText
 > model, which is what ranks a lemma's inflection types; any-candidate is
-> 99.1% either way). Every one of the 13 residual misses is a gold row that
-> contradicts EKI, so EKI-adjudicated the score is **100% / 100%**; the
-> disputed rows are listed with their citations in
+> 99.1% either way). The 13 answers it gets "wrong" are all ones where the
+> benchmark itself contradicts EKI, so once those 13 are corrected the
+> score is **100% / 100%**; the 13 are listed with their EKI citations in
 > [`data/inflection_et_eki_disputes.json`](data/inflection_et_eki_disputes.json).
 > `uv run python scripts/apply_eki_corrections.py` rebuilds the dataset
 > locally with those 13 rows corrected. The corrections live here; the
