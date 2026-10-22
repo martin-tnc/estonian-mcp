@@ -231,6 +231,42 @@ def defined_terms_quote_tests() -> None:
         q = server.check_defined_terms(quoted)
         check(f"no term from {quoted!r}", q["defined_terms"] == [] and q["issues"] == [], str(q))
 
+    # A definition follows '(' or ','. The adverb 'edaspidi' before a
+    # quotation (reported speech, emphasis, new wording) defines nothing,
+    # in any quote style.
+    for o, c in (("„", "“"), ("„", "”"), ("«", "»"), ('"', '"'), ("“", "”")):
+        for adverbial in (f"Hageja väitis, et kostja lubas edaspidi {o}kõik võlad tasuda{c}, "
+                          "kuid ei teinud seda.",
+                          f"Pooled kohustuvad edaspidi {o}heas usus{c} läbirääkimisi pidama.",
+                          f"Punkti 4.1 sõnastus on edaspidi {o}Üür on 650 eurot kuus{c}."):
+            q = server.check_defined_terms(adverbial)
+            check(f"no term from {adverbial[:40]!r}",
+                  q["defined_terms"] == [] and q["issues"] == [], str(q))
+        for lead in (f"AS Alfa, edaspidi {o}Müüja{c}, müüb. Müüja maksab.",
+                     f"AS Alfa,\nedaspidi {o}Müüja{c}, müüb. Müüja maksab.",
+                     f"AS Alfa ( edaspidi {o}Müüja{c}) müüb. Müüja maksab."):
+            check(f"{lead[:28]!r} defines Müüja",
+                  [t["term"] for t in server.check_defined_terms(lead)["defined_terms"]]
+                  == ["Müüja"], str(server.check_defined_terms(lead)["defined_terms"]))
+
+    # Uses are counted in one pass over the text, as a regex per term
+    # counts them: a term inside a longer one still counts.
+    nested = ("AS Alfa (edaspidi „Teenuse osutaja“) ja Teenuse (edaspidi „Teenuse“) lepivad "
+              "kokku. Teenuse osutaja vastutab, Teenuse hind ja Teenuse-osutaja. Teenused.")
+    want = {t: len(re.findall(r"(?<!\w)" + re.escape(t) + r"(?!\w)", nested))
+            for t in ("Teenuse osutaja", "Teenuse")}
+    got = {t["term"]: t["total_occurrences"]
+           for t in server.check_defined_terms(nested)["defined_terms"]}
+    check("a term inside a longer term is counted",
+          got == want == {"Teenuse osutaja": 2, "Teenuse": 6}, str(got))
+    # A regex per term made thousands of terms take seconds.
+    many = "".join(f"(edaspidi „T{i}“) T{i}. " for i in range(6000))[:100_000]
+    start = time.perf_counter()
+    r = server.check_defined_terms(many)
+    elapsed = time.perf_counter() - start
+    check("thousands of terms stay fast", elapsed < 5 and len(r["defined_terms"]) > 3000
+          and r["defined_terms"][0]["total_occurrences"] == 2, f"{elapsed:.1f} s")
+
     # An unclosed quote before a long blank run used to backtrack
     # quadratically (minutes at this size).
     start = time.perf_counter()

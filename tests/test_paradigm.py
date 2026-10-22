@@ -1275,7 +1275,7 @@ def unknown_names_get_no_invented_forms() -> None:
     from the lexicon only, and a name it lacks gets an empty table with a
     summary saying so, rather than invented forms."""
     print("a name Vabamorf does not know gets no invented forms")
-    for word in ("Kask", "Google", "Lindgren", "Facebook", "Holmes", "Teatris", "Raamat"):
+    for word in ("Google", "Lindgren", "Facebook", "Holmes"):
         r = server._paradigm(word)
         check(f"{word}: no forms", r.get("forms") == [],
               str([(e["form"], e["surface"]) for e in r.get("forms", [])][:3]))
@@ -1288,17 +1288,6 @@ def unknown_names_get_no_invented_forms() -> None:
     r = server._paradigm("Googlesse")
     check("the summary names the input, not a guessed lemma",
           "'Googlesse'" in (r.get("summary_estonian") or ""), str(r.get("summary_estonian")))
-    print("and a capitalised common word is pointed at its lowercase form")
-    for word, lower, gen in (("Raamat", "raamat", "raamatu"), ("Teatris", "teatris", "teatri"),
-                             ("Kask", "kask", "kase")):
-        summary = server._paradigm(word).get("summary_estonian") or ""
-        check(f"{word}: suggests '{lower}'", f"anna sisendiks '{lower}'" in summary, summary)
-        check(f"and '{lower}' has the paradigm", gen in form_of(server._paradigm(lower), "sg g"),
-              str(form_of(server._paradigm(lower), "sg g")))
-    for word in ("Google", "Lindgren"):
-        summary = server._paradigm(word).get("summary_estonian") or ""
-        check(f"{word}: no common-word suggestion, Vabamorf has none", "üldsõna" not in summary,
-              summary)
 
     print("the guesser is off for names only")
     check("Teatris is not synthesised as a name",
@@ -1310,6 +1299,35 @@ def unknown_names_get_no_invented_forms() -> None:
     check("a guessed common noun is unchanged",
           server._synthesize("qwertyxyz", "sg g", "S") != [],
           "the S guesser must stay on: paradigm('qwertyxyz') depends on it")
+
+
+def a_capitalised_common_word_gets_the_lowercase_answer() -> None:
+    """A common word at the start of a sentence is analysed as a name. Once
+    names inflected, one the lexicon has no name for came back empty:
+    `Pikk`, `Väärt` and `Neljas` lost the tables 0.8.0 gave them, and
+    `Raamat` was only pointed at `raamat`. The answer is the lowercase
+    word's, with a note saying so."""
+    print("a capitalised common word gets the lowercase word's paradigm")
+    for word, lemma, gen in (("Pikk", "pikk", "pika"), ("Väärt", "väärt", "väärt"),
+                             ("Must", "must", "musta"), ("Vaba", "vaba", "vaba"),
+                             ("Neljas", "neljas", "neljanda"), ("Viies", "viies", "viienda"),
+                             ("Raamat", "raamat", "raamatu"), ("Teatris", "teater", "teatri"),
+                             ("Kask", "kask", "kase"), ("Saar", "saar", "saare")):
+        r, low = server._paradigm(word), server._paradigm(word.lower())
+        check(f"{word} has the table of {word.lower()}",
+              r.get("lemma") == lemma and r.get("forms") == low.get("forms")
+              and r.get("partofspeech") == low.get("partofspeech") and gen in form_of(r, "sg g"),
+              f"lemma={r.get('lemma')} pos={r.get('partofspeech')} sg g={form_of(r, 'sg g')}")
+        check(f"{word}: the note names both words",
+              f"sõna '{word}' pärisnimena" in (r.get("reading_estonian") or "")
+              and f"sõnale '{word.lower()}'" in (r.get("reading_estonian") or ""),
+              str(r.get("reading_estonian")))
+    check("Väärt is invariant, as väärt is", server._paradigm("Väärt").get("invariant") is True)
+    print("a name the lexicon knows keeps the name's table")
+    for word, gen in (("Tallinn", "Tallinna"), ("Peeter", "Peetri"), ("Olev", "Olevi")):
+        r = server._paradigm(word)
+        check(f"{word} sg g = {gen}", r.get("partofspeech") == "H" and form_of(r, "sg g") == [gen]
+              and "reading_estonian" not in r, f"pos={r.get('partofspeech')} {form_of(r, 'sg g')}")
 
 
 def lowercase_place_names_keep_their_own_reading() -> None:
@@ -1352,7 +1370,7 @@ def a_name_the_lexicon_knows_is_found_behind_a_guess() -> None:
               form_of(r, "sg p") == [part] and form_of(r, "sg in") == [ine],
               f"{form_of(r, 'sg p')} {form_of(r, 'sg in')}")
     print("and a name the lexicon does not have still gets nothing")
-    for word in ("Kask", "Google", "Teatris", "Chile", "Marja", "Lõuna-Xyzisse"):
+    for word in ("Google", "Chile", "Lõuna-Xyzisse"):
         r = server._paradigm(word)
         check(f"{word}: no forms", r.get("forms") == [],
               f"lemma={r.get('lemma')} {[(e['form'], e['surface']) for e in r['forms']][:2]}")
@@ -1398,31 +1416,20 @@ def an_ascii_apostrophe_selects_its_type() -> None:
           str(r.get("paradigm_key")))
 
 
-def a_lowercase_name_is_pointed_at_the_name() -> None:
-    """A name typed in lowercase is a word the lexicon does not know, and
-    the guesser made a common noun of it: `peeter : peeteri`, `priit :
-    priidi`, `tartusse` as a plural partitive of `tartuss`. The name is
-    Peeter : Peetri, Priit : Priidu."""
-    print("a lowercase name gets no guessed forms, and is pointed at the name")
-    for word, name, gen in (("peeter", "Peeter", "Peetri"), ("priit", "Priit", "Priidu"),
-                            ("indrek", "Indrek", "Indreku"), ("lennart", "Lennart", "Lennarti"),
-                            ("tartusse", "Tartusse", "Tartu"), ("tallinn", "Tallinn", "Tallinna")):
+def a_lowercase_word_keeps_its_own_reading() -> None:
+    """Names inflecting changed nothing for lowercase input. A guard that
+    refused a lowercase word the lexicon lacks whenever its capitalised form
+    is a name also refused real common nouns: `buddha` (EKI: one who has
+    reached enlightenment) and its plural `buddhad` lost their table."""
+    print("a lowercase word keeps its own reading")
+    for word, lemma, gen in (("buddha", "buddha", "buddha"), ("buddhad", "buddha", "buddha"),
+                             ("mari", "mari", "marja"), ("kask", "kask", "kase"),
+                             ("linnamäe", None, "linnamäe"), ("jõhvi", None, "jõhvi")):
         r = server._paradigm(word)
-        check(f"{word}: no forms and no guessed lemma",
-              r.get("forms") == [] and r.get("lemma") is None,
-              f"lemma={r.get('lemma')} {[(e['form'], e['surface']) for e in r['forms']][:2]}")
-        check(f"{word}: points at '{name}'",
-              f"anna sisendiks '{name}'" in (r.get("summary_estonian") or ""),
-              str(r.get("summary_estonian")))
-        check(f"and '{name}' has the name's table, sg g {gen}",
-              form_of(server._paradigm(name), "sg g") == [gen],
-              str(form_of(server._paradigm(name), "sg g")))
-    print("a lowercase word the lexicon knows keeps its own reading")
-    for word, gen in (("mari", "marja"), ("kask", "kase"), ("linnamäe", "linnamäe"),
-                      ("jõhvi", "jõhvi")):
-        r = server._paradigm(word)
-        check(f"{word} keeps its table", gen in form_of(r, "sg g"),
+        check(f"{word} keeps its table", gen in form_of(r, "sg g")
+              and r.get("lemma") == (lemma or r.get("lemma")),
               f"lemma={r.get('lemma')} sg g={form_of(r, 'sg g')}")
+    check("buddhad pl n", form_of(server._paradigm("buddhad"), "pl n") == ["buddhad"])
     check("an unknown word that is no name keeps its guessed table",
           server._paradigm("qwertyxyz").get("forms") != [])
 
@@ -1459,11 +1466,12 @@ every_form_string_is_one_vabamorf_accepts()
 proper_nouns_inflect()
 names_are_ranked_by_their_own_spelling()
 unknown_names_get_no_invented_forms()
+a_capitalised_common_word_gets_the_lowercase_answer()
 lowercase_place_names_keep_their_own_reading()
 a_name_the_lexicon_knows_is_found_behind_a_guess()
 a_name_part_is_not_called_invariant()
 an_ascii_apostrophe_selects_its_type()
-a_lowercase_name_is_pointed_at_the_name()
+a_lowercase_word_keeps_its_own_reading()
 
 if failures:
     print(f"\n{len(failures)} failure(s):")

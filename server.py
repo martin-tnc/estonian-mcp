@@ -1767,8 +1767,8 @@ def _pos_et(pos: str) -> str:
 # as a name `Teatris : Teatrise`, a compound with its internal marker left
 # in (`Kultuurik_atlase`). For the 2,699 names in the corpus vocabulary
 # that the lexicon knows, the guesser changes no surface in any slot, so
-# switching it off costs nothing real. Kask, Google and Lindgren get no
-# forms instead of invented ones.
+# switching it off costs nothing real. Google and Lindgren get no forms
+# instead of invented ones; Teatris gets the answer for teatris.
 _LEXICON_ONLY_POS: frozenset[str] = frozenset({"H"})
 
 
@@ -2054,20 +2054,6 @@ def _paradigm(word: str) -> dict:
         if names:
             kept = {a["lemma"] for a in analyses[0]["analysis"]}
             lemma = next((n for n in names if n in kept), names[0])
-    elif (pos in _NOMINAL_POS and word.islower() and not _lexicon_readings(word)
-          and _lexicon_names(word[:1].upper() + word[1:])):
-        # A name typed in lowercase (peeter, tartusse). The guesser would
-        # make a common noun of it, `peeter : peeteri`, `tartuss : tartussi`.
-        return {
-            "lemma": None,
-            "partofspeech": None,
-            "forms": [],
-            "paradigm_count": 0,
-            "summary_estonian": (
-                f"Vabamorf ei tunne sõna '{word}'. Kui see on pärisnimi, anna "
-                f"sisendiks '{word[:1].upper() + word[1:]}'."
-            ),
-        }
 
     if pos not in _NOMINAL_POS and pos != "V":
         # The isolated-word reading does not inflect. Before claiming the
@@ -2177,23 +2163,27 @@ def _paradigm(word: str) -> dict:
         "paradigm_count": len(tables),
     }
     if not forms and pos == "H":
-        # A name the lexicon lacks (Google, Kask), or a capitalised common
-        # word Vabamorf took for one (a sentence-initial Raamat). Names
-        # inflect, so "0 vormi" alone would read as "does not inflect". The
-        # input is named, not the lemma: an unknown name's lemma is a guess.
+        lower = word.lower()
+        if lower != word and _lexicon_readings(lower):
+            # A capitalised common word Vabamorf took for a name it has no
+            # table for (a sentence-initial Pikk, Raamat, Neljas): the
+            # answer is the lowercase word's.
+            common = _paradigm(lower)
+            note = (f"Vabamorf ei oska sõna '{word}' pärisnimena käänata, siin on "
+                    f"vastus sõnale '{lower}'.")
+            common["reading_estonian"] = " ".join(
+                filter(None, (note, common.get("reading_estonian"))))
+            return common
+        # A name the lexicon lacks (Google, Lindgren). Names inflect, so
+        # "0 vormi" alone would read as "does not inflect". The input is
+        # named, not the lemma: an unknown name's lemma is a guess.
         if name_part:
-            summary = (f"Vabamorf tunneb sõna '{lemma}' ainult mitmesõnalise nime "
-                       f"muutumatu osana (nagu New nimes New York) ega oska seda "
-                       f"eraldi käänata.")
+            result["summary_estonian"] = (
+                f"Vabamorf tunneb sõna '{lemma}' ainult mitmesõnalise nime "
+                f"muutumatu osana (nagu New nimes New York) ega oska seda eraldi käänata.")
         else:
-            summary = f"Vabamorf ei tunne sõna '{word}' pärisnimena ega oska seda käänata."
-        try:
-            allr = vm.analyze([word], disambiguate=False)[0].get("analysis") or []
-        except Exception:
-            allr = []
-        if any(a.get("partofspeech") != "H" for a in allr):
-            summary += f" Kui see on üldsõna, anna sisendiks '{word.lower()}'."
-        result["summary_estonian"] = summary
+            result["summary_estonian"] = (
+                f"Vabamorf ei tunne sõna '{word}' pärisnimena ega oska seda käänata.")
     elif not forms:
         # `ei` reaches this path as a verb with no forms; a table that is
         # not empty explains itself.
@@ -4255,6 +4245,8 @@ def _check_legalese(text: str) -> dict:
 # “, ” and " also close a quotation, so as openers they need a space
 # before them or the term right after them: '„Teen seda edaspidi“, ütles
 # ta ja lisas “aitäh”' defines nothing.
+# Drafting puts 'edaspidi' right after '(' or ',' (see _introduces_term):
+# the adverb in 'lubas edaspidi „kõik võlad tasuda“' defines nothing.
 _DEF_QUOTES = "«»„“”\""
 _DEF_TERM_MAX = 150
 _DEF_CHAR = rf"[^{_DEF_QUOTES}()]"
@@ -4291,11 +4283,54 @@ def _unwrap_defined_term(term: str) -> str:
     return term
 
 
-def _count_word_occurrences(term: str, text: str) -> int:
-    """Case-sensitive whole-token occurrence count, Estonian-letter aware
-    (Python \\b is ASCII-only, so use explicit non-letter boundaries)."""
-    pat = r"(?<![\wäöüõšžÄÖÜÕŠŽ])" + re.escape(term) + r"(?![\wäöüõšžÄÖÜÕŠŽ])"
-    return len(re.findall(pat, text))
+def _introduces_term(text: str, at: int) -> bool:
+    """Whether the 'edaspidi' at `at` follows '(' or ',', blanks allowed:
+    '(edaspidi „Leping“)', ', edaspidi „Leping“,'."""
+    return text[max(0, at - 20):at].rstrip().endswith(("(", ","))
+
+
+# Where a term can start: a whole word, or one character that is neither a
+# word character nor a blank (a term can begin with «).
+_TERM_START_RE = re.compile(r"(?<!\w)(?:\w+|[^\w\s])")
+# Where a term can end: no word character follows.
+_TERM_END_RE = re.compile(r"(?!\w)")
+
+
+def _count_terms(terms: list[str], text: str) -> dict[str, int]:
+    """Case-sensitive whole-token occurrences of each term, in one pass.
+
+    Each place a term can start tries only the terms that start the same
+    way, longest first, and the shorter terms that match begins with occur
+    there too ('Teenuse' inside 'Teenuse osutaja'). Scanning the text once
+    per term took seconds for a document with thousands of terms.
+    """
+    by_start: dict[str, list[str]] = {}
+    for t in terms:
+        by_start.setdefault(_TERM_START_RE.match(t).group(), []).append(t)
+    # Terms that start alike are tried in one regex; a regex for a term
+    # that starts alone would cost more to compile than it saves.
+    alike = {s: re.compile("(?:" + "|".join(map(re.escape, sorted(ts, key=len, reverse=True)))
+                           + r")(?!\w)")
+             for s, ts in by_start.items() if len(ts) > 1}
+    longest = dict.fromkeys(terms, 0)
+    for m in _TERM_START_RE.finditer(text):
+        start, at = m.group(), m.start()
+        if start in alike:
+            hit = alike[start].match(text, at)
+            if hit:
+                longest[hit.group()] += 1
+        elif start in by_start:
+            t = by_start[start][0]
+            if text.startswith(t, at) and _TERM_END_RE.match(text, at + len(t)):
+                longest[t] += 1
+    counts = dict.fromkeys(terms, 0)
+    for t, n in longest.items():
+        if n:
+            counts[t] += n
+            for k in range(1, len(t)):
+                if _TERM_END_RE.match(t, k) and t[:k] in counts:
+                    counts[t[:k]] += n
+    return counts
 
 
 def _check_defined_terms(text: str) -> dict:
@@ -4309,15 +4344,16 @@ def _check_defined_terms(text: str) -> dict:
     for rx in (_EDASPIDI_QUOTED_RE, _EDASPIDI_BARE_RE):
         for m in rx.finditer(text):
             term = _unwrap_defined_term(m.group(1))
-            if not term:
+            if not term or (rx is _EDASPIDI_QUOTED_RE and not _introduces_term(text, m.start())):
                 continue
             d = defs.setdefault(term, {"position": m.start(), "definitions": 0})
             d["definitions"] += 1
 
     issues: list[dict] = []
     defined_terms: list[dict] = []
+    counts = _count_terms(list(defs), text)
     for term, d in sorted(defs.items(), key=lambda kv: kv[1]["position"]):
-        uses = _count_word_occurrences(term, text)
+        uses = counts[term]
         defined_terms.append({
             "term": term, "position": d["position"],
             "definitions": d["definitions"], "total_occurrences": uses,
