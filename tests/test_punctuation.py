@@ -184,10 +184,21 @@ for text in (
     # The comparison ends at a coordinator, a subordinator or a comma.
     "Ta jooksis nagu tuul ja hüppas üle aia.",
     "Ta on tugev nagu karu, aga mitte nii tark.",
-    # A participle is no predicate.
-    "Ta tegi nagu kokku lepitud.",
 ):
     clean(text)
+
+print("a nagu clause that drops olema still takes the comma (EKI)")
+one("Ta tegi nagu kokku lepitud.", "nagu")
+one("Arve tasuti nagu kokku lepitud.", "nagu")
+
+print("a nagu after a coordinated subject or before a relative clause is still asked for, as in 0.8.0")
+one("Ta tegi kõik nagu ema ja isa olid õpetanud.", "nagu")
+one("Tegin nagu ema, kes on kogenud kokk, soovitas.", "nagu")
+one("Raskmetallid nagu plii ja elavhõbe on organismile mürgised.", "nagu")
+
+print("a pair after a closing quote")
+one("Ta hüüdis „Mine ära!“ nii et kõik kuulsid.", "et")
+one("Ostsime puuvilju, köögivilju vms. nii et kõht sai täis.", "et")
 
 print("a nagu clause with a finite verb takes the comma")
 one("Kõik läks nagu võis arvata.", "nagu")

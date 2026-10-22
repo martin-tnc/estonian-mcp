@@ -914,19 +914,25 @@ _PAIR_UNSPLIT: frozenset[str] = frozenset({"ilma", "olgugi"})
 # quotation, and the word after it starts a sentence.
 _QUOTE_MARKS: frozenset[str] = frozenset({"„", "“", "”", '"', "«", "»"})
 
-# What ends the clause a nagu opens: clause punctuation, a coordinator,
-# or a subordinator.
-_CLAUSE_MARKS: frozenset[str] = frozenset(",;:.!?…()[]-\u2013\u2014")
-_NAGU_CLAUSE_END: frozenset[str] = _COMMA_BEFORE | {
-    "ja", "ning", "ega", "või", "ehk", "kuid", "aga",
-}
+# Where the scan after a nagu stops. A sentence end, or a subordinator or
+# adversative opening the next clause, with no verb seen: a verbless
+# comparison (tugev nagu karu.). Other clause punctuation: undecided, so
+# the comma is asked for, as 0.8.0 always did (Tegin nagu ema, kes ...,
+# soovitas). ja / ning / ega / või do not stop it: they join words as
+# often as clauses (nagu ema ja isa olid õpetanud).
+_SENTENCE_END_MARKS: frozenset[str] = frozenset({".", "!", "?", "…", "..."})
+_CLAUSE_MARKS: frozenset[str] = frozenset(",;:()[]-\u2013\u2014")
+_NAGU_CLAUSE_END: frozenset[str] = _COMMA_BEFORE | {"kuid", "aga"}
+_COORDINATORS: frozenset[str] = frozenset({"ja", "ning", "ega", "või"})
 
-# Vabamorf verb form codes that are no predicate: the infinitives and
-# supines, the des form, the participles. Every other verb code is a
-# personal or impersonal form in some mood, or a negation (ei, pole).
+# Vabamorf verb form codes that make no clause after nagu: the
+# infinitives and supines, the des form, the present participles. Every
+# other verb code is a personal or impersonal form in some mood, or a
+# negation (ei, pole). The past participles nud / tud are left out on
+# purpose: nagu kokku lepitud, nagu öeldud are clauses that drop olema
+# and take the comma (EKI).
 _NONFINITE_FORMS: frozenset[str] = frozenset({
-    "da", "des", "ma", "mas", "mast", "maks", "mata", "tama",
-    "nud", "tud", "v", "tav",
+    "da", "des", "ma", "mas", "mast", "maks", "mata", "tama", "v", "tav",
 })
 
 
@@ -2749,15 +2755,18 @@ def _pair_start(spans: list, i: int) -> int | None:
 
 
 def _opening_quote(spans: list, k: int) -> bool:
-    """spans[k] is a quotation mark not glued to a word before it, which
-    would close a quotation (sõna“): what follows it starts a sentence."""
-    return spans[k].text in _QUOTE_MARKS and (
-        k == 0 or spans[k - 1].end < spans[k].start or not spans[k - 1].text[-1].isalnum())
+    """spans[k] opens a quotation, so what follows it starts a sentence:
+    „ and « always open; the other marks only when nothing is glued to
+    them from the left (a mark glued to a word or to ! ? closes one:
+    „Mine ära!“ nii et)."""
+    if spans[k].text in {"„", "«"}:
+        return True
+    return spans[k].text in _QUOTE_MARKS and (k == 0 or spans[k - 1].end < spans[k].start)
 
 
 @lru_cache(maxsize=4096)
 def _may_be_finite(word: str) -> bool:
-    """Some lexicon reading of `word` is a finite verb. Read out of context,
+    """Some lexicon reading of `word` is a clause verb. Read out of context,
     as the sentence analysis keeps one reading of a homograph: sõnas,
     lisas, selgus and tuli are nouns there as often as verbs."""
     found = _vabamorf().analyze([word], disambiguate=False, guess=False, propername=False)
@@ -2766,18 +2775,33 @@ def _may_be_finite(word: str) -> bool:
 
 
 def _verb_after(spans: list, i: int) -> bool:
-    """A word after the nagu at spans[i], before the clause punctuation,
-    coordinator or subordinator that ends its clause, can be a finite verb.
-    Then nagu opens a clause (Vaatas mind, nagu oleksin võõras), not a
-    verbless comparison, which takes no comma (tugev nagu karu)."""
+    """False only for a clear verbless comparison (tugev nagu karu.), which
+    takes no comma: no word after the nagu at spans[i] can be a clause verb
+    before the sentence ends or the next subordinator opens a clause.
+    Otherwise nagu opens a clause (Vaatas mind, nagu oleksin võõras) or the
+    scan hit clause punctuation and cannot tell, and the comma is asked
+    for, as 0.8.0 did."""
+    def verb(span) -> bool:
+        return (any(a.partofspeech == "V" and a.form not in _NONFINITE_FORMS
+                    for a in span.annotations) or _may_be_finite(span.text))
+
     for k in range(i + 1, len(spans)):
         span = spans[k]
-        if span.text.lower() in _NAGU_CLAUSE_END or (
-                not any(ch.isalnum() for ch in span.text)
-                and not _CLAUSE_MARKS.isdisjoint(span.text)):
+        nxt = spans[k + 1] if k + 1 < len(spans) else None
+        if span.text in _SENTENCE_END_MARKS or span.text.lower() in _NAGU_CLAUSE_END:
             return False
-        if any(a.partofspeech == "V" and a.form not in _NONFINITE_FORMS
-               for a in span.annotations) or _may_be_finite(span.text):
+        if span.text.lower() in _COORDINATORS:
+            # ja + verb: a second predicate of the main clause (jooksis
+            # nagu tuul ja hüppas); ja + anything else stays in the scan.
+            if nxt is not None and verb(nxt):
+                return False
+            continue
+        if not any(ch.isalnum() for ch in span.text) and not _CLAUSE_MARKS.isdisjoint(span.text):
+            # A comma before a coordinator ends a verbless comparison
+            # (tugev nagu karu, aga ...); any other mark cannot tell.
+            return not (span.text == "," and nxt is not None
+                        and nxt.text.lower() in _COORDINATORS | {"aga", "kuid", "vaid"})
+        if verb(span):
             return True
     return False
 
@@ -2791,7 +2815,7 @@ def _check_punctuation(text: str) -> dict:
     spans = list(t.morph_analysis)
 
     issues: list[dict] = []
-    skip_prev = {",", ";", ":", "(", "\u2014", "\u2013", "-", ".", "!", "?", "...", "…"}
+    skip_prev = {",", ";", ":", "(", "[", "\u2014", "\u2013", "-", ".", "!", "?", "...", "…"}
     for i, span in enumerate(spans):
         word_lower = span.text.lower()
         if word_lower not in _COMMA_BEFORE:
@@ -2805,8 +2829,17 @@ def _check_punctuation(text: str) -> dict:
         first = _pair_start(spans, i)
         if first is not None:
             # A comma, the sentence start or an opening quotation mark
-            # before the whole connective sets it off.
-            if first == 0 or spans[first - 1].text in skip_prev or _opening_quote(spans, first - 1):
+            # before the whole connective sets it off. A full stop counts
+            # only before a capital (vms. nii et is mid-sentence).
+            before = spans[first - 1].text if first else ""
+            capital = spans[first].text[:1].isupper()
+            # A closing quote counts as what stands before it: „jah,“ nii
+            # et has its comma, „Jah.“ Nii et starts a sentence.
+            if before in _QUOTE_MARKS and first >= 2 and not _opening_quote(spans, first - 1):
+                before = spans[first - 2].text if spans[first - 2].text in skip_prev else (
+                    "." if capital else before)
+            if (first == 0 or _opening_quote(spans, first - 1)
+                    or (before in skip_prev and (before not in _SENTENCE_END_MARKS or capital))):
                 continue
             if spans[first].text.lower() in _PAIR_UNSPLIT:
                 position = spans[first].start
