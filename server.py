@@ -1670,7 +1670,10 @@ def _form_et(code: str, lemma: str | None = None) -> str | None:
 # comparative (parem, suurem) and every superlative (parim, suurim) in
 # Estonian, 1.5% of the 20k most frequent word forms. Vabamorf synthesises
 # all three correctly under their own POS code; the tool just never asked.
-_NOMINAL_POS: frozenset[str] = frozenset({"S", "A", "P", "N", "O", "C", "U"})
+# H (proper noun) was missing the same way, so Tallinn, Tartu and Jaan were
+# all said not to inflect. Its synthesis is lexicon-only: see
+# _LEXICON_ONLY_POS.
+_NOMINAL_POS: frozenset[str] = frozenset({"S", "H", "A", "P", "N", "O", "C", "U"})
 
 # POS codes we will promote a non-inflecting reading TO. Deliberately
 # excludes S: a function word's surface routinely collides with some rare
@@ -1696,6 +1699,7 @@ _NOMINAL_KEY_FORM = "sg g"
 # reader. A bare tagset letter in an Estonian sentence is not an answer.
 _POS_LABELS_ET: dict[str, str] = {
     "S": "nimisõna",
+    "H": "pärisnimi",
     "A": "omadussõna",
     "C": "omadussõna keskvõrdes",
     "U": "omadussõna ülivõrdes",
@@ -1721,6 +1725,17 @@ def _pos_et(pos: str) -> str:
     return f"{pos} ({label})" if label else f"{pos}"
 
 
+# POS codes synthesised from Vabamorf's lexicon alone, its guesser off. Given
+# a capitalised word it does not know, the guesser makes a name of whatever
+# it was handed: a sentence-initial `Teatris` (inessive of teater) comes back
+# as a name `Teatris : Teatrise`, a compound with its internal marker left
+# in (`Kultuurik_atlase`). For the 2,699 names in the corpus vocabulary
+# that the lexicon knows, the guesser changes no surface in any slot, so
+# switching it off costs nothing real. Kask, Google and Lindgren get no
+# forms instead of invented ones.
+_LEXICON_ONLY_POS: frozenset[str] = frozenset({"H"})
+
+
 def _synthesize(lemma: str, form: str, pos: str = "", hint: str = "") -> list[str]:
     """Vabamorf synthesis for one form: deduplicated, order preserved.
 
@@ -1743,7 +1758,8 @@ def _synthesize(lemma: str, form: str, pos: str = "", hint: str = "") -> list[st
     had to guess why.
     """
     try:
-        got = _vabamorf().synthesize(lemma, form, pos, hint) or []
+        got = _vabamorf().synthesize(lemma, form, pos, hint,
+                                     guess=pos not in _LEXICON_ONLY_POS) or []
     except Exception:
         return []
     return list(dict.fromkeys(got))
@@ -1775,6 +1791,11 @@ def _rank_paradigm_keys(keys: list[str]) -> tuple[list[str], bool]:
     Returns (ordered keys, whether corpus evidence was actually used). With
     no model installed the order is Vabamorf's, unchanged, and the caller
     is told so rather than being handed a silent guess.
+
+    Keys are looked up as generated. The vocabulary keeps case (`Tallinn`
+    and `tallinn` are separate entries), so lowercasing a name's key finds
+    nothing for `Yorgi` and `Yorki`, both attested, and would tell the
+    caller there was no frequency data.
     """
     # The length check comes FIRST. _corpus_ranks() deserialises a 34 MB
     # model, and there is nothing to rank below two candidates, so putting
@@ -1788,10 +1809,10 @@ def _rank_paradigm_keys(keys: list[str]) -> tuple[list[str], bool]:
     unattested = len(ranks) + 1
     order = sorted(
         range(len(keys)),
-        key=lambda i: (ranks.get(keys[i].lower(), unattested), i),
+        key=lambda i: (ranks.get(keys[i], unattested), i),
     )
     ordered = [keys[i] for i in order]
-    used = any(k.lower() in ranks for k in keys)
+    used = any(k in ranks for k in keys)
     return (ordered, used)
 
 
@@ -2046,7 +2067,19 @@ def _paradigm(word: str) -> dict:
         "forms": forms,
         "paradigm_count": len(tables),
     }
-    if not forms:
+    if not forms and pos == "H":
+        # A name the lexicon lacks (Google, Kask), or a capitalised common
+        # word Vabamorf took for one (a sentence-initial Raamat). Names
+        # inflect, so "0 vormi" alone would read as "does not inflect".
+        summary = f"Vabamorf ei tunne pärisnime '{lemma}' ega oska seda käänata."
+        try:
+            allr = vm.analyze([word], disambiguate=False)[0].get("analysis") or []
+        except Exception:
+            allr = []
+        if any(a.get("partofspeech") != "H" for a in allr):
+            summary += f" Kui see on üldsõna, anna sisendiks '{word.lower()}'."
+        result["summary_estonian"] = summary
+    elif not forms:
         # `ei` reaches this path as a verb with no forms; a table that is
         # not empty explains itself.
         result["summary_estonian"] = (

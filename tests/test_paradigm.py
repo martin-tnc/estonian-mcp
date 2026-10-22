@@ -837,7 +837,7 @@ def unambiguous_words_never_touch_the_model() -> None:
         # Variant ordering is model-free, so an ordinary word never
         # reaches the model at all now, whether or not its slots have
         # variants.
-        for word in ("auto", "kasutama", "maja", "raamat", "esimene", "ilus"):
+        for word in ("auto", "kasutama", "maja", "raamat", "esimene", "ilus", "Tallinn", "Jaan"):
             server._paradigm(word)
         check("no lookup for any single-paradigm word", calls == [], f"{len(calls)} lookups")
         # There IS a second call site, and it is not this one: a word
@@ -859,7 +859,8 @@ def every_return_path_carries_paradigm_count() -> None:
     `ei` takes the full path as a verb and still has no forms, so it is the
     case that keeps `summary_estonian` tied to the forms, not the path."""
     print("paradigm_count is on every return path")
-    for word in ("ja", "väga", "qwertyuiopasdf", "kott", "kasutama", "esimene", "ei"):
+    for word in ("ja", "väga", "qwertyuiopasdf", "kott", "kasutama", "esimene", "ei",
+                 "Tallinn", "Google"):
         r = server._paradigm(word)
         check(f"{word} has paradigm_count", "paradigm_count" in r, str(sorted(r)))
         check(f"{word} echoes neither input nor a static note",
@@ -877,7 +878,8 @@ def estonian_labels_accompany_every_pos_code() -> None:
     """Project rule: an English or tagset label never ships without a
     correct Estonian rendering."""
     print("POS codes are glossed in Estonian")
-    for word, pos, et in (("kott", "S", "nimisõna"), ("ilus", "A", "omadussõna"),
+    for word, pos, et in (("kott", "S", "nimisõna"), ("Tallinn", "H", "pärisnimi"),
+                          ("ilus", "A", "omadussõna"),
                           ("esimene", "O", "järgarvsõna"),
                           ("parem", "C", "omadussõna keskvõrdes"),
                           ("parim", "U", "omadussõna ülivõrdes"),
@@ -1136,6 +1138,159 @@ def every_form_string_is_one_vabamorf_accepts() -> None:
               for c in eval_inflection._CASE if c != "sisseütlev"))
 
 
+# ------------------------------------------------------------ proper nouns
+
+def proper_nouns_inflect() -> None:
+    """Vabamorf tags a proper noun H, and H was missing from _NOMINAL_POS,
+    so paradigm("Tallinn") answered "Sõnaliik H ei käändu ega pöördu,
+    paradigmat pole." with empty forms. Names inflect like any noun."""
+    print("proper nouns have a paradigm")
+    # (input, lemma, sg g, sg p, sg ill, sg in)
+    for word, lemma, gen, part, ill, ine in (
+        ("Tallinn", "Tallinn", "Tallinna", "Tallinna", "Tallinnasse", "Tallinnas"),
+        ("Tartu", "Tartu", "Tartu", "Tartut", "Tartusse", "Tartus"),
+        ("Pärnu", "Pärnu", "Pärnu", "Pärnut", "Pärnusse", "Pärnus"),
+        ("Eesti", "Eesti", "Eesti", "Eestit", "Eestisse", "Eestis"),
+        ("Soome", "Soome", "Soome", "Soomet", "Soomesse", "Soomes"),
+        ("Saksamaa", "Saksamaa", "Saksamaa", "Saksamaad", "Saksamaasse", "Saksamaas"),
+        ("Ameerika", "Ameerika", "Ameerika", "Ameerikat", "Ameerikasse", "Ameerikas"),
+        ("Jaan", "Jaan", "Jaani", "Jaani", "Jaanisse", "Jaanis"),
+        ("Peeter", "Peeter", "Peetri", "Peetrit", "Peetrisse", "Peetris"),
+        ("Smith", "Smith", "Smithi", "Smithi", "Smithisse", "Smithis"),
+        ("Microsoft", "Microsoft", "Microsofti", "Microsofti", "Microsoftisse", "Microsoftis"),
+        # Inflected and all-caps input resolve to the same name.
+        ("Tallinnasse", "Tallinn", "Tallinna", "Tallinna", "Tallinnasse", "Tallinnas"),
+        ("TALLINN", "Tallinn", "Tallinna", "Tallinna", "Tallinnasse", "Tallinnas"),
+        # Bare `Mari` is disambiguated to the noun mari; a form of the
+        # name reaches the name.
+        ("Marit", "Mari", "Mari", "Marit", "Marisse", "Maris"),
+    ):
+        r = server._paradigm(word)
+        check(f"{word} is the proper noun {lemma}",
+              r.get("lemma") == lemma and r.get("partofspeech") == "H",
+              f"lemma={r.get('lemma')} pos={r.get('partofspeech')}")
+        check(f"{word}: H = pärisnimi, a käändsõna",
+              r.get("partofspeech_estonian") == "pärisnimi"
+              and r.get("word_class") == "nominal", str(r.get("partofspeech_estonian")))
+        singular = [e for e in r.get("forms", []) if e["form"].startswith("sg ")]
+        check(f"{word} has all 14 singular cases", len(singular) == 14,
+              f"got {len(singular)}: {r.get('summary_estonian')}")
+        for code, want in (("sg g", gen), ("sg p", part), ("sg ill", ill), ("sg in", ine)):
+            check(f"{word} {code} = {want}", form_of(r, code) == [want], str(form_of(r, code)))
+        every = [s for e in r.get("forms", []) for s in surfaces(e)]
+        check(f"{word}: every surface keeps the capital",
+              bool(every) and all(s[:1] == lemma[:1] for s in every),
+              str([s for s in every if s[:1] != lemma[:1]]))
+        check(f"{word}: a table needs no summary", "summary_estonian" not in r,
+              str(r.get("summary_estonian")))
+
+    print("and the short illative where the name has one")
+    for word, short in (("Tallinn", "Tallinna"), ("Tartu", "Tartu"), ("Soome", "Soome"),
+                        ("Võru", "Võrru"), ("Läti", "Lätti"), ("Riia", "Riiga"),
+                        ("Haapsalu", "Haapsallu")):
+        r = server._paradigm(word)
+        check(f"{word} -> {short}", form_of(r, "adt") == [short], str(form_of(r, "adt")))
+    for word in ("Eesti", "Saksamaa", "Ameerika"):
+        r = server._paradigm(word)
+        check(f"{word} has no adt slot", "adt" not in [e["form"] for e in r["forms"]],
+              str(form_of(r, "adt")))
+
+    print("person names have plurals, place names stay singular")
+    for word, pl_n, pl_g in (("Jaan", "Jaanid", "Jaanide"), ("Peeter", "Peetrid", "Peetrite"),
+                             ("Smith", "Smithid", "Smithide"), ("Marit", "Marid", "Maride")):
+        r = server._paradigm(word)
+        check(f"{word} pl n = {pl_n}", form_of(r, "pl n") == [pl_n], str(form_of(r, "pl n")))
+        check(f"{word} pl g = {pl_g}", form_of(r, "pl g") == [pl_g], str(form_of(r, "pl g")))
+    for word in ("Tartu", "Eesti", "Saksamaa"):
+        r = server._paradigm(word)
+        check(f"{word}: no plural is invented",
+              not [e for e in r["forms"] if e["form"].startswith("pl ")],
+              str([e["form"] for e in r["forms"] if e["form"].startswith("pl ")]))
+
+
+def names_are_ranked_by_their_own_spelling() -> None:
+    """The corpus vocabulary keeps case (`Tallinn` and `tallinn` are
+    separate entries). Ranking looked a key up lowercased, which for a name
+    finds nothing or a common-word homograph: `York`'s two types, Yorgi
+    and Yorki, are both attested, and once names reached the ranking they
+    were reported as having no frequency data at all."""
+    print("a name's inflection types are ranked by the name's own spelling")
+    r = server._paradigm("Toomas")
+    keys = {r.get("paradigm_key")} | {o["paradigm_key"] for o in r.get("other_paradigms", [])}
+    check("Toomas has two types, Tooma and Toomase",
+          r.get("paradigm_count") == 2 and keys == {"Tooma", "Toomase"}, str(keys))
+    r = server._paradigm("Toomase")
+    check("an inflected input selects its type",
+          r.get("paradigm_key") == "Toomase"
+          and r.get("ranked_by_corpus_frequency") is False, str(r.get("paradigm_key")))
+    if not HAVE_CORPUS:
+        print("  SKIP  no fastText model installed, ranking assertions not run")
+        skipped.append("names_are_ranked_by_their_own_spelling")
+        return
+    order, used = server._rank_paradigm_keys(["Yorki", "Yorgi"])
+    check("Yorgi outranks Yorki on the capitalised counts",
+          order == ["Yorgi", "Yorki"] and used is True, f"{order} used={used}")
+    r = server._paradigm("York")
+    check("York says the ranking used corpus data",
+          r.get("paradigm_key") == "Yorgi" and r.get("ranked_by_corpus_frequency") is True,
+          f"key={r.get('paradigm_key')} ranked={r.get('ranked_by_corpus_frequency')}")
+    order, used = server._rank_paradigm_keys(["kota", "koti"])
+    check("a common noun ranks as before", order == ["koti", "kota"] and used is True,
+          f"{order} used={used}")
+
+
+def unknown_names_get_no_invented_forms() -> None:
+    """Vabamorf's guesser builds a name out of any capitalised word it does
+    not know: a sentence-initial `Teatris` (the inessive of teater) comes
+    back as a name `Teatris : Teatrise`, and a compound keeps its internal
+    marker (`Kultuurik_atlase`). Proper nouns are therefore synthesised
+    from the lexicon only, and a name it lacks gets an empty table with a
+    summary saying so, rather than invented forms."""
+    print("a name Vabamorf does not know gets no invented forms")
+    for word in ("Kask", "Google", "Lindgren", "Facebook", "Holmes", "Teatris", "Raamat"):
+        r = server._paradigm(word)
+        check(f"{word}: no forms", r.get("forms") == [],
+              str([(e["form"], e["surface"]) for e in r.get("forms", [])][:3]))
+        check(f"{word}: the summary says the name is unknown, not that it does not inflect",
+              "ei tunne pärisnime" in (r.get("summary_estonian") or "")
+              and "ei käändu" not in (r.get("summary_estonian") or ""),
+              str(r.get("summary_estonian")))
+    print("and a capitalised common word is pointed at its lowercase form")
+    for word, lower, gen in (("Raamat", "raamat", "raamatu"), ("Teatris", "teatris", "teatri"),
+                             ("Kask", "kask", "kase")):
+        summary = server._paradigm(word).get("summary_estonian") or ""
+        check(f"{word}: suggests '{lower}'", f"anna sisendiks '{lower}'" in summary, summary)
+        check(f"and '{lower}' has the paradigm", gen in form_of(server._paradigm(lower), "sg g"),
+              str(form_of(server._paradigm(lower), "sg g")))
+    for word in ("Google", "Lindgren"):
+        summary = server._paradigm(word).get("summary_estonian") or ""
+        check(f"{word}: no common-word suggestion, Vabamorf has none", "üldsõna" not in summary,
+              summary)
+
+    print("the guesser is off for names only")
+    check("Teatris is not synthesised as a name",
+          server._synthesize("Teatris", "sg g", "H") == [],
+          str(server._synthesize("Teatris", "sg g", "H")))
+    check("a name the lexicon knows still is",
+          server._synthesize("Tallinn", "sg g", "H") == ["Tallinna"],
+          str(server._synthesize("Tallinn", "sg g", "H")))
+    check("a guessed common noun is unchanged",
+          server._synthesize("qwertyxyz", "sg g", "S") != [],
+          "the S guesser must stay on: paradigm('qwertyxyz') depends on it")
+
+
+def lowercase_place_names_keep_their_own_reading() -> None:
+    """Lowercase `eesti`, `tartu`, `soome` are the indeclinable genitive
+    attribute (eesti keel, tartu murre): "eestit keelt" is the error that
+    answer prevents, so the name's paradigm must not replace it."""
+    print("a lowercase place name keeps its genitive-attribute reading")
+    for word in ("eesti", "tartu", "soome"):
+        r = server._paradigm(word)
+        check(f"{word} is G and does not inflect",
+              r.get("partofspeech") == "G" and r.get("forms") == [],
+              f"pos={r.get('partofspeech')} forms={len(r.get('forms', []))}")
+
+
 ordinals_comparatives_superlatives_inflect()
 no_form_is_invented_for_a_word_that_lacks_it()
 verb_free_variants_are_not_two_inflection_types()
@@ -1165,6 +1320,10 @@ the_two_eki_rules_are_encoded()
 disputes_file_is_well_formed()
 the_short_illative_is_in_the_table()
 every_form_string_is_one_vabamorf_accepts()
+proper_nouns_inflect()
+names_are_ranked_by_their_own_spelling()
+unknown_names_get_no_invented_forms()
+lowercase_place_names_keep_their_own_reading()
 
 if failures:
     print(f"\n{len(failures)} failure(s):")

@@ -55,7 +55,7 @@ def check(label: str, cond: bool, detail: str = "") -> None:
 
 
 # One representative call per tool, plus the shapes that take a different
-# path through the code. `paradigm` gets seven: the bug that prompted this
+# path through the code. `paradigm` gets eight: the bug that prompted this
 # file only appeared for words whose result OMITS an optional key, which
 # is most of them, and the omitted set differs per word.
 CALLS: list[tuple[str, dict]] = [
@@ -75,6 +75,7 @@ CALLS: list[tuple[str, dict]] = [
     ("paradigm", {"word": "ja"}),            # does not inflect
     ("paradigm", {"word": "ei"}),            # verb path, no forms, a summary
     ("paradigm", {"word": "qwertyxyz"}),     # guessed noun
+    ("paradigm", {"word": "Google"}),        # unknown proper noun, no forms, a summary
     ("classify_register", {"text": "Käesoleva lepingu alusel sätestatakse kohustused."}),
     ("check_style", {"text": "Süsteem kasutab andmeid. Andmed töödeldakse."}),
     ("check_officialese", {"text": "Aruandeperioodil koguti ja valideeriti andmestik."}),
