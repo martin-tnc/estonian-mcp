@@ -550,6 +550,14 @@ check("sentence_length has mean+stddev",
 check("all four sub-checks have Estonian summary",
       all(r[k].get("summary_estonian") for k in
           ("repetition", "passive_voice", "sentence_length", "hedging")))
+check("no input echo or static note", "text" not in r and "note" not in r,
+      str(sorted(r)))
+lemmas = [x["lemma"] for x in r["repetition"]["repeated_lemmas"]]
+check("repetition summary names the lemmas as a plain list",
+      lemmas and r["repetition"]["summary_estonian"].endswith(
+          ": " + ", ".join(lemmas) + ".")
+      and "[" not in r["repetition"]["summary_estonian"],
+      r["repetition"]["summary_estonian"])
 clean = "Eile käisin kinos. Film oli huvitav ja näitlejad mängisid hästi."
 r = server.check_style(clean)
 check("clean copy: no passive flagged", r["passive_voice"]["passive_count"] == 0)
@@ -658,6 +666,7 @@ formal = server.classify_register(
     "määratletud tingimustele."
 )
 check("formal text → formal tier", formal["tier"] == "formal", formal["tier"])
+check("no static note", "note" not in formal, str(sorted(formal)))
 check("formal text → positive score", formal["score"] > 0)
 check(
     "formal text → tier_estonian='formaalne' (not the *formalne hallucination)",

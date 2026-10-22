@@ -1316,12 +1316,10 @@ class _DomainTermsResult(TypedDict, total=False):
 
 
 class _StyleResult(TypedDict, total=False):
-    text: str
     repetition: dict
     passive_voice: dict
     sentence_length: dict
     hedging: dict
-    note: str
 
 
 class _RegisterResult(TypedDict, total=False):
@@ -1333,7 +1331,6 @@ class _RegisterResult(TypedDict, total=False):
     consistency: dict
     structure: dict
     word_count: int
-    note: str
 
 
 class _CheckResult(TypedDict, total=False):
@@ -2367,11 +2364,11 @@ def _classify_register(text: str) -> dict:
         raw = len(formal_hits) - len(colloquial_hits)
         score = max(-1.0, min(1.0, raw * 4.0 / word_count))
 
-    # Structural signals. The tool's own note always conceded that real
-    # register lives in syntax as much as vocabulary, and a dense R&D
-    # report scored 'neutraalne', 0.0, with zero markers, while 87.5% of
-    # its verbs were umbisikuline tegumood. Impersonal voice and noun
-    # density now contribute, bounded and additive-only:
+    # Structural signals. Real register lives in syntax as much as
+    # vocabulary: on the lexicon alone a dense R&D report scored
+    # 'neutraalne', 0.0, with zero markers, while 87.5% of its verbs were
+    # umbisikuline tegumood. Impersonal voice and noun density now
+    # contribute, bounded and additive-only:
     #   * they apply only from 25 words up, so short strings still score
     #     purely on the lexicon;
     #   * they apply only when the lexicon is not net-colloquial, so
@@ -2461,25 +2458,6 @@ def _classify_register(text: str) -> dict:
             ),
         },
         "word_count": word_count,
-        "note": (
-            "Heuristic classifier: lexicon-based and lemma-aware, plus "
-            "two structural signals. The lexicon covers legal-"
-            "administrative AND academic/report vocabulary. `structure` "
-            "adds umbisikuline tegumood ratio and noun/verb density, "
-            "bounded at +0.4 and applied only from 25 words up and only "
-            "when the lexicon is not net-colloquial. Without them a dense "
-            "R&D report scored 'neutraalne' at 0.0 while 87.5% of its "
-            "verbs were impersonal. The `consistency` field flags texts "
-            "that carry BOTH formal AND colloquial markers, useful for "
-            "catching jarring register-mixing even when the overall "
-            "tier rounds to 'neutral'. Treat as a directional hint, not "
-            "a verdict; for a full kantseliit breakdown use "
-            "check_officialese. When composing an Estonian-language reply, "
-            "USE THE tier_estonian AND consistency.summary_estonian "
-            "FIELDS VERBATIM rather than translating yourself: common "
-            "mistranslations include 'formalne' (wrong) vs 'formaalne' "
-            "(correct)."
-        ),
     }
 
 
@@ -4238,7 +4216,8 @@ def _check_style(text: str) -> dict:
 
     # Summary lines in Estonian (so Claude can quote directly).
     rep_et = (
-        f"Kõige sagedamini korduvad lemmad: {[r['lemma'] for r in repeated]}."
+        f"Kõige sagedamini korduvad lemmad: "
+        f"{', '.join(r['lemma'] for r in repeated)}."
         if repeated else "Sõnade kordumist ei tuvastatud."
     )
     passive_et = (
@@ -4262,7 +4241,6 @@ def _check_style(text: str) -> dict:
     )
 
     return {
-        "text": text,
         "repetition": {
             "threshold": threshold,
             "repeated_lemmas": repeated,
@@ -4291,23 +4269,6 @@ def _check_style(text: str) -> dict:
             "matches": hedge_matches,
             "summary_estonian": hedge_et,
         },
-        "note": (
-            "Heuristic phase-1 style checker. Repetition threshold "
-            "scales with text length. `passive_voice` counts Estonian "
-            "umbisikuline tegumood: the -takse/-ti/-tud/-tav family, PLUS "
-            "negated impersonals ('ei esitata', 'ei avaldatud') that raw "
-            "Vabamorf form codes miss, MINUS `ei`/`ära` (tagged pos=V but "
-            "not real verbs) and MINUS attributive -tud participles "
-            "('lukustatud osa'), which are listed under "
-            "`attributive_excluded` instead. ~15% is a healthy ceiling for "
-            "marketing copy and <5% may read too forceful; for reports and "
-            "academic prose anything above ~40% is the single clearest "
-            "kantseliit signal. Pair this with check_officialese. "
-            "Hedging density >5% reads wishy-washy. Sentence length "
-            "stddev should typically be at least 30% of the mean for "
-            "natural rhythm. Quote *_estonian fields verbatim in "
-            "Estonian replies."
-        ),
     }
 
 
@@ -4318,25 +4279,19 @@ def _check_style(text: str) -> dict:
     openWorldHint=False,
 ))
 @_counted
-def check_style(text: Annotated[str, Field(description="Estonian text to compute style metrics for (repetition, passive voice, sentence length, hedging).")]) -> _StyleResult:
-    """Heuristic Estonian style metrics for newsletter / ad / email copy.
+def check_style(text: Annotated[str, Field(description="Estonian text to measure.")]) -> _StyleResult:
+    """Heuristic Estonian style metrics; no cliche detection.
 
-    Returns four metrics that flag common writing issues, each with an
-    Estonian-language summary line for quoting verbatim:
-
-    - repetition: lemma-aware (so 'kasutab' and 'kasutamine' both count
-      under 'kasutama'). Threshold scales with text length so short
-      replies don't fire on natural repeats.
-    - passive_voice: ratio of Estonian -takse/-ti/-tud/-tav forms over
-      total verbs. Newsletter copy usually wants <15%.
-    - sentence_length: mean, stddev, min, max in content words. Low
-      stddev = monotonous rhythm.
-    - hedging: density of hedging words (võib-olla, vist, pigem, ehk,
-      ilmselt, …). >5% reads wishy-washy.
-
-    Phase-1 limitation: heuristic only. No detection of cliché phrases,
-    weasel-words beyond the curated 15 lemmas, or genre-specific style
-    drift. Input capped at 100,000 characters.
+    - `repetition`: content lemmas used `threshold`+ times (scales with
+      length), with character offsets.
+    - `passive_voice`: umbisikuline tegumood share of verbs (attributive
+      -tud participles go to `attributive_excluded`). Marketing copy: aim
+      under 15%; under 5% may read forceful. Reports: over 40% is the
+      clearest kantseliit sign (see check_officialese).
+    - `sentence_length`: words per sentence; a stddev under 30% of the
+      mean reads monotonous.
+    - `hedging`: share of words on a short fixed list (vist, pigem,
+      ehk); over 5% reads wishy-washy, 0% does not rule hedging out.
     """
     return _check_style(text)
 
@@ -4481,10 +4436,7 @@ def _check_officialese(text: str) -> dict:
                 "rule_estonian": "liiga pikk lause",
                 "explanation": (
                     f"Lauses on {n_words} sisusõna (piir "
-                    f"{_OFFICIALESE_LONG_SENTENCE_WORDS}). Eesti keeles "
-                    f"mahub käändevormide tõttu ühte lausesse rohkem infot "
-                    f"kui inglise keeles, nii et pikk lause muutub kiiresti "
-                    f"raskeks."
+                    f"{_OFFICIALESE_LONG_SENTENCE_WORDS})."
                 ),
                 "suggestion": "jaga lause lühemateks lauseteks",
             })
@@ -4540,7 +4492,6 @@ def _check_officialese(text: str) -> dict:
     issues.sort(key=lambda d: d.get("position", 0))
 
     return {
-        "text": text,
         "issues": issues,
         "metrics": {
             "word_count": word_count,
@@ -4549,7 +4500,10 @@ def _check_officialese(text: str) -> dict:
             "noun_verb_ratio": round(noun_verb_ratio, 2),
             "nominalisations": nominalisations,
             "nominalisations_per_100_words": round(nom_per_100, 2),
-            "impersonal_voice": imp,
+            # verb_count above already carries imp["total_verbs"].
+            "impersonal_voice": {
+                k: v for k, v in imp.items() if k != "total_verbs"
+            },
         },
         "summary_estonian": (
             f"Leiti {len(issues)} kantseliidikohta. Nimisõnade ja tegusõnade "
@@ -4558,36 +4512,14 @@ def _check_officialese(text: str) -> dict:
             if issues else
             "Selget kantseliiti ei tuvastatud."
         ),
-        "note": (
-            "Heuristic kantseliit diagnostic for NON-legal Estonian "
-            "(reports, academic prose, business writing), the sibling of "
-            "check_legalese, which is scoped to statutes and stays silent "
-            "on report officialese. Thresholds are calibrated against a "
-            "native speaker's plain-language rewrite of a real Estonian R&D "
-            "report. Across that edit the impersonal ratio went 0.875 → "
-            "0.308, -mine nouns per 100 words 7.89 → 2.33 and the longest "
-            "sentence 30 → 21 content words, so those three gates (0.4, "
-            "4.0, 25) separate bureaucratic from plain cleanly. Noun/verb "
-            "moved only 2.50 → 2.23, so its gate (2.5) is deliberately "
-            "loose and that signal is the weakest of the four. Weigh it "
-            "last. `metrics.nominalisations` gives each "
-            "-mine noun with the verb to swap in. STARTER lexicons, "
-            "precision-first and not exhaustive: absence of flags is not "
-            "proof the text is plain. For legal text use check_legalese "
-            "instead: it protects terms of art, which this tool does not. "
-            "Quote rule_estonian and summary_estonian verbatim in Estonian "
-            "replies."
-        ),
     }
 
 
 class _OfficialeseResult(TypedDict, total=False):
     """Output of check_officialese: kantseliit issues + density metrics."""
-    text: str
     issues: list[dict]
     metrics: dict
     summary_estonian: str
-    note: str
 
 
 @mcp.tool(annotations=ToolAnnotations(
@@ -4597,30 +4529,23 @@ class _OfficialeseResult(TypedDict, total=False):
     openWorldHint=False,
 ))
 @_counted
-def check_officialese(text: Annotated[str, Field(description="Estonian non-legal text (report, academic, business) to check for kantseliit / bureaucratic density.")]) -> _OfficialeseResult:
-    """Flag Estonian kantseliit in reports, academic and business prose.
+def check_officialese(text: Annotated[str, Field(description="Estonian non-legal prose (report, academic, business).")]) -> _OfficialeseResult:
+    """Flag Estonian kantseliit in reports, academic and business prose;
+    statutes and contracts go to check_legalese, which protects terms of
+    art.
 
-    check_legalese is the legal-text sibling; use THIS one for anything
-    that is not a statute or contract, where check_legalese finds nothing
-    because its lexicon and length gate are tuned for legislation.
+    Issue rules: `impersonal-voice` (ratio 0.4+, 4+ verbs),
+    `nominalisation` (4+ -mine nouns per 100 words, positioned at the
+    first), `noun-density` (noun/verb 2.5+, weakest: weigh it last),
+    `clause-stacking` (3+ subordinate-clause openers in a sentence),
+    `long-sentence` (25+ words), `officialese-filler`,
+    `officialese-phrase`, `poolt-calque`. `impersonal-voice` and
+    `noun-density` are document-wide (position 0).
+    `metrics.nominalisations` gives each -mine noun's verb (hindamine →
+    hindama).
 
-    Returns `issues` (each with an Estonian `rule_estonian` label, an
-    explanation and a concrete suggestion) plus `metrics`:
-
-    - nominalisation: -mine verbal nouns per 100 words, each paired with
-      the verb to use instead (`hindamine` → `hindama`)
-    - noun_verb_ratio: nimisõnastiil density; over ~2.0 reads heavy
-    - impersonal_voice: umbisikuline tegumood, correctly counted
-      (negated impersonals included, `ei`/`ära` and attributive -tud
-      participles excluded)
-    - clause-stacking: 3+ subordinate-clause openers in one sentence, the
-      'mille käigus … ning …' pile-up that a word count alone misses
-    - long-sentence: 25+ content words, calibrated for Estonian
-    - officialese filler: `omama` → `olema`, `kujutab endast` → `on`,
-      `viidi läbi` → `tehti`, `X-i poolt tehtud` → `X-i tehtud`
-
-    Heuristic and precision-first: no flags does not prove the text is
-    plain. Input capped at 100,000 characters.
+    Precision-first starter lexicons: no issues is not proof the text is
+    plain.
     """
     return _check_officialese(text)
 
@@ -4628,6 +4553,8 @@ def check_officialese(text: Annotated[str, Field(description="Estonian non-legal
 # How many distinct content nouns get a WordNet lookup in
 # check_term_consistency. Bounds cost on long documents; the nouns are
 # ranked by frequency first, so the cap drops only long-tail hapaxes.
+# The tool's docstring states this number; tests/test_officialese.py pins
+# the two together.
 _TERM_CONSISTENCY_WORDNET_CAP = 40
 
 
@@ -4809,17 +4736,13 @@ def _check_term_consistency(text: str, glossary: list[str] | None = None) -> dic
     groups.sort(key=lambda g: g["variants"][0]["position"])
 
     return {
-        "text": text,
         "groups": groups,
         "terms_analysed": len(counts),
-        "rules_run": {
-            "shared-compound-head": True,
-            "shared-wordnet-synset": wordnet_ok,
-        },
         # Top-level so a caller cannot miss it. A partial run that reports
         # "nothing found" reads as a clean bill of health, which is exactly
         # how a half-strength checker misleads someone, so say it here AND
-        # in summary_estonian, not only in rules_run.
+        # in summary_estonian. The compound-head rule always runs; the
+        # WordNet rule ran exactly when this is false.
         "degraded": not wordnet_ok,
         "summary_estonian": (
             (
@@ -4838,49 +4761,15 @@ def _check_term_consistency(text: str, glossary: list[str] | None = None) -> dic
                 "`uv run python scripts/fetch_resources.py`."
             )
         ),
-        "note": (
-            "Heuristic terminology-consistency check: 'one referent, one "
-            "term'. Rule `shared-compound-head` fires when a bare noun and "
-            "a compound built on it both appear (andmestik + "
-            "teadusandmestik), or when 3+ lemmas share one head; two "
-            "compounds sharing a head is deliberately NOT enough, since "
-            "those are usually distinct things. Rule "
-            "`shared-wordnet-synset` fires when two lemmas sit in the same "
-            "Estonian WordNet synset, and does not run at all when that "
-            "resource is missing, in which case `degraded` is true and an "
-            "empty `groups` list means only that the compound-head rule "
-            "found nothing. The tool does NOT decide which "
-            "variant is correct (that needs domain context it cannot see); "
-            "it reports counts so you can pick the dominant term, and some "
-            "groups are legitimately distinct concepts. KNOWN GAP: "
-            "synonym pairs that share neither a head nor a synset "
-            "(korpus / andmestik) are not caught. For those, read each "
-            "candidate's `synonyms` definition and check whether its "
-            "domain fits the text. WordNet lookups are capped at the "
-            f"{_TERM_CONSISTENCY_WORDNET_CAP} most frequent nouns, and "
-            "`rules_run` reports whether the WordNet rule actually ran: "
-            "if the resource is unavailable it degrades to the "
-            "compound-head rule alone rather than failing. Input "
-            "capped at 100,000 characters."
-            + (" A domain glossary was applied: each variant carries "
-               "`in_domain_glossary`, and where exactly one variant of a "
-               "group is listed it is the group's `preferred` form, the "
-               "organisation's own term, whatever `dominant` says. Several "
-               "listed variants suggest distinct concepts, so none is "
-               "preferred." if terms else "")
-        ),
     }
 
 
 class _TermConsistencyResult(TypedDict, total=False):
     """Output of check_term_consistency: groups of competing terms."""
-    text: str
     groups: list[dict]
     terms_analysed: int
-    rules_run: dict
     degraded: bool
     summary_estonian: str
-    note: str
 
 
 @mcp.tool(annotations=ToolAnnotations(
@@ -4891,42 +4780,29 @@ class _TermConsistencyResult(TypedDict, total=False):
 ))
 @_counted
 def check_term_consistency(
-    text: Annotated[str, Field(description="Estonian document to check for the same thing being named several different ways.")],
-    glossary: Annotated[list[_GlossaryTerm] | None, Field(max_length=MAX_GLOSSARY_TERMS, description="Optional domain lemmas (base forms), used for this call only alongside the server's ESTNLTK_MCP_DOMAIN_GLOSSARY file. A listed variant becomes its group's `preferred` form. Nothing is stored. Up to 1,000 terms of up to 200 characters each.")] = None,
+    text: Annotated[str, Field(description="The whole Estonian document, not one paragraph at a time.")],
+    glossary: Annotated[list[_GlossaryTerm] | None, Field(max_length=MAX_GLOSSARY_TERMS, description="Optional domain lemmas (base forms) for this call only, added to any server glossary. Not stored.")] = None,
 ) -> _TermConsistencyResult:
-    """Flag a document that calls the same thing several different names.
+    """Flag a document that names one thing several ways (andmestik,
+    teadusandmestik, pildiandmestik).
 
-    The classic long-document defect, and the one a model editing
-    paragraph-by-paragraph reliably misses: a dataset that is `andmestik`
-    on page 1, `teadusandmestik` on page 2 and `korpus` on page 3.
+    Rules: `shared-compound-head` (a bare noun plus a compound on it, or
+    3+ lemmas sharing a head) and `shared-wordnet-synset` (two of the 40
+    most frequent nouns share a WordNet synset). Each group gives
+    `variants` with counts and `dominant`, the most used. Some groups are
+    distinct concepts and the tool does not pick the right term: read
+    each first.
 
-    Two precision-first rules:
+    `degraded: true` means WordNet is missing and the synset rule did not
+    run: no groups is then no proof of consistency.
 
-    - `shared-compound-head`: a bare noun and a compound built on it both
-      occur (`andmestik` + `pildiandmestik`), or 3+ lemmas share one head.
-    - `shared-wordnet-synset`: two lemmas sit in one Estonian WordNet
-      synset, i.e. WordNet calls them synonyms.
+    With a domain glossary (the server's or `glossary`), variants carry
+    `in_domain_glossary`, and a group's only listed variant is its
+    `preferred` term, whatever `dominant` says (several listed suggest
+    distinct concepts).
 
-    Each group lists its variants with occurrence counts and the dominant
-    one, so you can standardise on the most-used term. The tool does not
-    decide which variant is right: some groups are genuinely distinct
-    concepts, so read them before rewriting.
-
-    CHECK `degraded` BEFORE TRUSTING AN EMPTY RESULT. When Estonian WordNet
-    is not installed, the `shared-wordnet-synset` rule cannot run; the tool
-    then returns `degraded: true`, says so in `summary_estonian`, and marks
-    the rule false in `rules_run`. "No groups found" from a degraded run
-    means "the compound-head rule found nothing", NOT "the terminology is
-    consistent".
-
-    With a domain glossary (the server's ESTNLTK_MCP_DOMAIN_GLOSSARY, or
-    `glossary` for this call), each variant carries `in_domain_glossary`,
-    and a group with exactly one listed variant names it as `preferred`:
-    the organisation's own term, whatever the counts say.
-
-    Known gap: synonyms sharing neither a head nor a synset (korpus /
-    andmestik) are not caught. Input capped at 100,000 characters;
-    `glossary` at 1,000 terms.
+    Misses synonyms sharing neither head nor synset (korpus /
+    andmestik): compare their `synonyms` definitions.
     """
     return _check_term_consistency(text, glossary)
 
@@ -4939,28 +4815,17 @@ def check_term_consistency(
 ))
 @_counted
 def classify_register(text: Annotated[str, Field(description="Estonian text to classify by register (formal vs colloquial).")]) -> _RegisterResult:
-    """Heuristic register classifier for Estonian (formal vs colloquial).
+    """Heuristic Estonian register score: a directional hint, not a verdict.
+    Most everyday prose scores neutral, and address forms (sina/teie)
+    are not scored.
 
-    Returns a tier label (English in `tier`, correct Estonian in
-    `tier_estonian`: quote that field verbatim when composing an
-    Estonian-language reply rather than translating `tier` yourself, to
-    avoid mistranslations like "formalne" instead of the correct
-    "formaalne"), a normalised score in [-1, 1] (positive = formal,
-    negative = colloquial), and the matched formal/colloquial markers
-    found in the text. Useful for sanity-checking that marketing copy
-    hasn't drifted into officialese, or that a contract draft hasn't
-    slipped into chat tone.
-
-    The lexicon covers legal-administrative AND academic/report
-    vocabulary. `structure` adds two syntactic signals (umbisikuline
-    tegumood ratio and noun/verb density), bounded at +0.4, applied only
-    from 25 words up and only when the lexicon is not net-colloquial.
-
-    LIMITATION: still a heuristic, not a trained model. Address forms and
-    finer syntax go uncaught, and most newsletter prose scores 'neutral'.
-    Use the result as a directional hint, not a verdict; for a full
-    kantseliit breakdown with per-issue suggestions, call
-    check_officialese. Input capped at 100,000 characters.
+    `score` runs from -1 (colloquial) to 1 (formal); `tier_estonian` is
+    the correct Estonian label to quote (formaalne, never *formalne).
+    `consistency.is_mixed`: formal and colloquial markers both occur,
+    which jars even when the tier is neutral. `structure` adds up to 0.4
+    (`applied`) for umbisikuline tegumood and noun density, from 25 words
+    up and never on net-colloquial text. For a per-issue kantseliit
+    breakdown use check_officialese.
     """
     return _classify_register(text)
 

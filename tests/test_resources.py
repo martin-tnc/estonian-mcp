@@ -98,12 +98,13 @@ def degraded_is_visible() -> None:
     with _with_wordnet(False):
         r = server.check_term_consistency(DOC)
 
-    check("rules_run reports the WordNet rule did not run",
-          r["rules_run"]["shared-wordnet-synset"] is False, str(r["rules_run"]))
-    check("compound-head rule still ran",
-          r["rules_run"]["shared-compound-head"] is True, str(r["rules_run"]))
     check("top-level degraded flag is set",
           r.get("degraded") is True, str(r.get("degraded")))
+    # The compound-head rule is independent of WordNet, so a degraded run
+    # still returns its findings rather than an empty result.
+    check("compound-head findings survive a degraded run",
+          any(g["rule"] == "shared-compound-head" for g in r["groups"]),
+          str(r["groups"]))
     summary = r["summary_estonian"]
     check("summary warns the result is partial",
           "osaline" in summary, summary)
@@ -128,10 +129,6 @@ def healthy_run_is_not_polluted() -> None:
           r.get("degraded") is False, str(r.get("degraded")))
     check("no partial-result warning in the summary",
           "osaline" not in r["summary_estonian"], r["summary_estonian"])
-    check("rules_run shows both rules ran",
-          r["rules_run"] == {"shared-compound-head": True,
-                             "shared-wordnet-synset": True},
-          str(r["rules_run"]))
     # The compound-head rule is independent of WordNet, so the real finding
     # must survive either way.
     check("the andmestik group is still found",
@@ -151,7 +148,7 @@ def no_download_attempt_at_runtime() -> None:
     with _with_wordnet(False):
         r = server.check_term_consistency(DOC)  # must not raise
     check("degraded run completes without calling _wordnet()",
-          r["rules_run"]["shared-wordnet-synset"] is False)
+          r["degraded"] is True)
 
     with _with_wordnet(False):
         raised = None

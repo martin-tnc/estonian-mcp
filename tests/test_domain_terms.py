@@ -565,7 +565,7 @@ def end_to_end() -> None:
     dump = json.dumps(tc_plain, ensure_ascii=False)
     check("check_term_consistency has no glossary keys",
           "in_domain_glossary" not in dump and '"preferred"' not in dump, dump[:200])
-    check("nor a glossary sentence in its note", "domain glossary" not in tc_plain["note"])
+    check("nor a note", "note" not in tc_plain, str(sorted(tc_plain)))
     check("check_compound_familiarity has no glossary sentence in a note",
           "domain glossary" not in (plain.get("note") or ""), str(plain.get("note")))
     if plain["wordnet_checked"]:
@@ -577,6 +577,9 @@ def end_to_end() -> None:
     out = server.check_term_consistency("Andmestik ja teadusandmestik.", glossary=["Teadusandmestik"])
     check("a per-call listed variant is preferred",
           out["groups"] and out["groups"][0].get("preferred") == "teadusandmestik", str(out["groups"]))
+    check("the glossary shows on every variant, not in a note",
+          "note" not in out and all("in_domain_glossary" in v for g in out["groups"] for v in g["variants"]),
+          str(out))
     out = server.check_term_consistency("Ladustamiskohad, kogumiskohad ja laadimiskohad.", glossary=["ladustamiskoht"])
     check("matched under a later reading, the glossary form is preferred",
           any(g.get("preferred") == "ladustamiskoht" for g in out["groups"]), str(out["groups"]))

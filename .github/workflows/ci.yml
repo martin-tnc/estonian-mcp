@@ -347,7 +347,7 @@ jobs:
           # callers would be getting confident-but-partial answers.
           echo "--- tools/call check_term_consistency (must NOT be degraded)"
           call_tool check_term_consistency '{"text":"Andmestik ja teadusandmestik."}' \
-            | python3 -c "import sys,json; r=json.load(sys.stdin).get('result',{}); assert not r.get('isError'), 'check_term_consistency errored: '+str(r); o=json.loads(r['content'][0]['text']); assert o['rules_run']['shared-wordnet-synset'] is True, 'WordNet rule did not run in the image: '+str(o['rules_run']); assert o.get('degraded') is False, 'image is serving degraded results: '+str(o); print('check_term_consistency OK, not degraded')"
+            | python3 -c "import sys,json; r=json.load(sys.stdin).get('result',{}); assert not r.get('isError'), 'check_term_consistency errored: '+str(r); o=json.loads(r['content'][0]['text']); assert o.get('degraded') is False, 'image is serving degraded results: '+str(o); print('check_term_consistency OK, not degraded')"
 
           docker logs mcp | tail -20
           docker rm -f mcp
