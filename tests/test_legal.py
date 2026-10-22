@@ -238,6 +238,69 @@ def defined_terms_quote_tests() -> None:
     elapsed = time.perf_counter() - start
     check("unclosed quote before a long blank run stays linear", elapsed < 5, f"{elapsed:.1f} s")
 
+    def found(text: str) -> list[tuple[str, int, int]]:
+        r = server.check_defined_terms(text)
+        return [(t["term"], t["definitions"], t["total_occurrences"]) for t in r["defined_terms"]]
+
+    # An unclosed opener defines nothing and hides none of the definitions
+    # after it, even with a straight or curly quote later in the text.
+    for o in ("«", "„", '"'):
+        broken = (f'AS Alfa (edaspidi {o}Müüja), OÜ Beeta (edaspidi «Ostja») ja AS Gamma '
+                  '(edaspidi «Käendaja») sõlmisid käesoleva lepingu (edaspidi «Leping»). '
+                  'Ostja tasub, Käendaja tagab ja Leping kehtib. Kaup tarnitakse OÜ "Delta" '
+                  'ja “Smart” kaudu, ekraan 27".')
+        r = server.check_defined_terms(broken)
+        check(f"unclosed {o}Müüja) hides no later definition",
+              found(broken) == [("Ostja", 1, 2), ("Käendaja", 1, 2), ("Leping", 1, 2)]
+              and r["issues"] == [], str(r))
+    # The same without parentheses: the term stops at the next 'edaspidi'.
+    loose = ('AS Alfa, edaspidi «Müüja, ja OÜ Beeta, edaspidi «Ostja», sõlmivad '
+             'lepingu. Ostja tasub OÜ "Delta" kaudu.')
+    check("unclosed opener stops at the next edaspidi",
+          found(loose) == [("Ostja", 1, 2)], str(found(loose)))
+    # Nor does an unclosed opener with no stop at all become a term when
+    # the next quote is far away.
+    far = "Leping, edaspidi „Leping, " + "kehtib ja " * 30 + 'OÜ "Delta" kaudu.'
+    check("unclosed opener with a distant quote defines nothing", found(far) == [], str(found(far)))
+
+    # A doubled opener is a typo and is skipped.
+    check("««Leping» defines Leping",
+          found("Teenusleping (edaspidi ««Leping») jõustub. Leping lõpeb 2027.")
+          == [("Leping", 1, 2)])
+    dbl = ('Müüja (edaspidi ««Müüja»), Ostja (edaspidi «Ostja») ja Pank (edaspidi '
+           '«Pank») sõlmivad lepingu. Müüja, Ostja ja Pank. Hoone asub aadressil "Pikk 1".')
+    check("««Müüja» hides no later definition",
+          found(dbl) == [("Müüja", 1, 3), ("Ostja", 1, 3), ("Pank", 1, 3)], str(found(dbl)))
+
+    # Inner quotes around the whole term are double quoting, not the name;
+    # an inner pair that starts the name stays.
+    for o, c in (("„", "“"), ('"', '"'), ("“", "”")):
+        r = server.check_defined_terms(
+            f"Teenusleping (edaspidi {o}«Leping»{c}) jõustub. Leping lõpeb 2027.")
+        check(f"{o}«Leping»{c} defines Leping, no issues",
+              [(t["term"], t["total_occurrences"]) for t in r["defined_terms"]] == [("Leping", 2)]
+              and r["issues"] == [], str(r))
+    check("„'Leping'“ defines Leping",
+          found("Teenusleping (edaspidi „'Leping'“) jõustub. Leping lõpeb.") == [("Leping", 1, 2)])
+    green = "Linn (edaspidi „«Roheline linn» 2030“) algab. «Roheline linn» 2030 lõpeb."
+    check("„«Roheline linn» 2030“ keeps its inner quotes",
+          found(green) == [("«Roheline linn» 2030", 1, 2)], str(found(green)))
+
+    # An apostrophe that belongs to the name stays in the term.
+    for text, term in (("Kohvik (edaspidi «Kohvik 'Kodu'») avati. Kohvik 'Kodu' on avatud.",
+                        "Kohvik 'Kodu'"),
+                       ("Firma (edaspidi „Jones'“) maksab. Jones' esindaja allkirjastab.", "Jones'"),
+                       ("Firma (edaspidi „McDonald’s“) maksab. McDonald’s esindaja kirjutab.",
+                        "McDonald’s")):
+        check(f"{term!r} keeps its apostrophe", found(text) == [(term, 1, 2)], str(found(text)))
+
+    # Parentheses inside a term and a word starting with 'edaspidi' stay.
+    for text, term in (("Hind (edaspidi „Hind (käibemaksuta)“) on lõplik. Hind (käibemaksuta) "
+                        "tasutakse.", "Hind (käibemaksuta)"),
+                       ("Kokkulepe (edaspidi „Edaspidise koostöö kokkulepe“) jõustub. "
+                        "Edaspidise koostöö kokkulepe kehtib.", "Edaspidise koostöö kokkulepe")):
+        check(f"{term!r} is one term", found(text) == [(term, 1, 2)], str(found(text)))
+
 
 def is_legal_term_tests() -> None:
     print("_is_legal_term")

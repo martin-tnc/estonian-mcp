@@ -3898,19 +3898,28 @@ def _check_legalese(text: str) -> dict:
 
 # Definition markers: '(edaspidi „Müüja“)', '(edaspidi ühiselt «Pooled»)',
 # '(edaspidi "Ostja")', '(edaspidi nimetatud Leping)'. Quotes pair loosely:
-# «…», „…“, „…”, “…”, ”…”, "…" and mixes of them. The term holds no double
-# quote except a whole inner «…» ('„Programm «Kevad»“', the Estonian
-# nesting), so it ends at the first closing quote and never swallows one.
+# «…», „…“, „…”, “…”, ”…”, "…" and mixes of them; a doubled opener
+# ('««Leping»') is a typo and is skipped. The term holds no double quote
+# except a whole inner «…» ('„Programm «Kevad»“', the Estonian nesting),
+# so it ends at the first closing quote and never swallows one.
+# An unclosed opener ('(edaspidi «Müüja), ...') must not swallow the
+# definitions after it, so the term also stops at an unbalanced
+# parenthesis or the word 'edaspidi' and runs at most _DEF_TERM_MAX
+# characters (an inner «…» or (…) counting as one); past those it is no
+# definition at all.
 # “, ” and " also close a quotation, so as openers they need a space
 # before them or the term right after them: '„Teen seda edaspidi“, ütles
 # ta ja lisas “aitäh”' defines nothing.
 _DEF_QUOTES = "«»„“”\""
+_DEF_TERM_MAX = 150
+_DEF_CHAR = rf"[^{_DEF_QUOTES}()]"
 _EDASPIDI_QUOTED_RE = re.compile(
     r"edaspidi(?:\s+ühiselt)?(?:\s+nimetatud)?"
-    r"(?:\s*[«„]|\s+[“”\"]|[“”\"](?=\w))"
+    r"(?:\s*[«„]+?|\s+[“”\"]|[“”\"](?=\w))"
     # No \s* around the term: the caller strips it, and a \s* next to a
     # lazy term makes an unclosed quote before a long blank run quadratic.
-    rf"((?:[^{_DEF_QUOTES}]|«[^{_DEF_QUOTES}]+»)+?)[»“”\"]",
+    rf"((?:(?!edaspidi(?!\w)){_DEF_CHAR}|«{_DEF_CHAR}+»|\({_DEF_CHAR}*\))"
+    rf"{{1,{_DEF_TERM_MAX}}}?)[»“”\"]",
     re.IGNORECASE,
 )
 _EDASPIDI_BARE_RE = re.compile(
@@ -3921,6 +3930,20 @@ _XREF_RE = re.compile(
     r"(?:lõige|lõiget|lõikes|lõike|punkt|punkti|punktis|artikkel|artikli)\s+\d+)",
     re.IGNORECASE,
 )
+
+
+# Inner quotes around the whole term are double quoting, not part of the
+# name: „«Leping»“ and "'Leping'" define Leping. An apostrophe that ends
+# the name (Jones') or quotes a part of it (Kohvik 'Kodu') stays.
+_DEF_INNER_PAIRS = (("«", "»"), ("'", "'"), ("‘", "’"))
+
+
+def _unwrap_defined_term(term: str) -> str:
+    term = term.strip()
+    for o, c in _DEF_INNER_PAIRS:
+        if len(term) > 2 and term[0] == o and term[-1] == c and o not in term[1:-1]:
+            return term[1:-1].strip()
+    return term
 
 
 def _count_word_occurrences(term: str, text: str) -> int:
@@ -3940,7 +3963,7 @@ def _check_defined_terms(text: str) -> dict:
     defs: dict[str, dict] = {}
     for rx in (_EDASPIDI_QUOTED_RE, _EDASPIDI_BARE_RE):
         for m in rx.finditer(text):
-            term = m.group(1).strip().strip("' ")
+            term = _unwrap_defined_term(m.group(1))
             if not term:
                 continue
             d = defs.setdefault(term, {"position": m.start(), "definitions": 0})
