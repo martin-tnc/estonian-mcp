@@ -154,6 +154,7 @@ check("verb paradigm has past 1sg", verb_forms.get("sin") == "kasutasin")
 check("verb paradigm has nud-participle", verb_forms.get("nud") == "kasutanud")
 p = server.paradigm("ja")
 check("non-inflecting word returns empty forms", p["forms"] == [], str(p))
+check("and says why", bool(p.get("summary_estonian")), str(p))
 try:
     server.paradigm("two words")
     check("paradigm rejects whitespace", False, "no exception")
@@ -191,6 +192,7 @@ check("ORG detected", "ORG" in types)
 print("find_related_words")
 related = server.find_related_words("kohv", n=5)
 check("returns 5 matches", len(related["matches"]) == 5)
+check("does not echo the input word", set(related) == {"matches"}, str(sorted(related)))
 check(
     "match shape",
     all("word" in m and "score" in m for m in related["matches"]),
@@ -218,6 +220,20 @@ syn = server.synonyms("kasutama")
 check("returns synsets", syn["synset_count"] > 0)
 flat_lemmas = {lemma for s in syn["synsets"] for lemma in s["lemmas"]}
 check("recognises 'tarvitama' as a synonym", "tarvitama" in flat_lemmas, str(flat_lemmas))
+check("does not echo the input word", set(syn) == {"synsets", "synset_count"}, str(sorted(syn)))
+# The POS is the second-to-last dot segment of `name` (a literal can hold a
+# dot itself, "1."), so `pos` is not repeated; `examples` only when WordNet
+# has some.
+check("synsets carry name, definition and lemmas, no pos",
+      all({"name", "definition", "lemmas"} <= set(s) and "pos" not in s
+          and s["name"].rsplit(".", 2)[1] in {"n", "v", "a", "r"}
+          for s in syn["synsets"]),
+      str(syn["synsets"][:2]))
+korpus = server.synonyms("korpus", max_synsets=10)["synsets"]
+check("examples is omitted when empty and present when not",
+      all(s.get("examples", ["x"]) for s in korpus)
+      and any("examples" in s for s in korpus) and any("examples" not in s for s in korpus),
+      str([(s["name"], s.get("examples")) for s in korpus]))
 try:
     server.synonyms("two words")
     check("synonyms rejects whitespace", False, "no exception")
@@ -251,6 +267,11 @@ check("3-syllable word → 2 break points", len(r["breaks"]) == 2, str(r["breaks
 check("preferred uses interpunct", "·" in r["preferred"], r["preferred"])
 short = server.check_hyphenation("on")
 check("too-short word → no breaks", short["breaks"] == [], str(short))
+check("hyphenation returns breaks, preferred and syllable_count only",
+      set(r) == set(short) == {"breaks", "preferred", "syllable_count"},
+      f"{sorted(r)} {sorted(short)}")
+check("a too-short word is told apart by its syllable count",
+      short["syllable_count"] < 2 and short["preferred"] == "on", str(short))
 try:
     server.check_hyphenation("two words")
     check("rejects whitespace", False, "no exception")

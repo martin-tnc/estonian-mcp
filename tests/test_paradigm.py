@@ -5,7 +5,7 @@ EKI rules that the 13 disputed gold rows in that dataset get wrong.
 
 1. WHOLE WORD CLASSES WERE DENIED A PARADIGM. `_NOMINAL_POS` listed only
    S/A/P/N, so every ordinal (`esimene`), comparative (`parem`) and
-   superlative (`parim`) got "Sõnaliik 'O' ei käändu ega pöördu:
+   superlative (`parim`) got "Sõnaliik 'O' ei käändu ega pöördu,
    paradigmat pole." Those are 1.5% of the 20k most frequent Estonian word
    forms, and Vabamorf synthesizes all of them correctly under their own
    POS code.
@@ -35,6 +35,7 @@ Run via:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -86,6 +87,24 @@ def form_of(result: dict, code: str) -> list[str]:
         if e["form"] == code:
             return surfaces(e)
     return []
+
+
+def check_labels_said_once(word: str, result: dict) -> None:
+    """`other_paradigms` entries carry `form_estonian` only for a code the
+    first table lacks; every table is built from the same labels, so the
+    name of any code is still in the result exactly once."""
+    labelled = {e["form"]: e["form_estonian"] for e in result["forms"]}
+    for o in result.get("other_paradigms", []):
+        for e in o["forms"]:
+            code = e["form"]
+            if code in labelled:
+                check(f"{word}/{o['paradigm_key']} {code}: label not repeated",
+                      "form_estonian" not in e, str(e))
+            else:
+                check(f"{word}/{o['paradigm_key']} {code}: label kept for a code "
+                      "the first table lacks",
+                      e.get("form_estonian") == server._CASE_LABELS_ET.get(code, code),
+                      str(e))
 
 
 HAVE_CORPUS = server._corpus_ranks() is not None
@@ -181,6 +200,14 @@ def homonym_paradigms_are_separated() -> None:
     keys = [r.get("paradigm_key")] + [o["paradigm_key"] for o in r["other_paradigms"]]
     check("both paradigms are named by their sg g", sorted(keys) == ["kota", "koti"],
           str(keys))
+    check_labels_said_once("kott", r)
+    # väikse leads with its own type, which has no short illative; the
+    # väikese type has one (väikesse), so that slot keeps its label.
+    small = server._paradigm("väikse")
+    check_labels_said_once("väikse", small)
+    kept = [e["form"] for o in small.get("other_paradigms", []) for e in o["forms"]
+            if "form_estonian" in e]
+    check("a code only a later table has keeps its label", kept == ["adt"], str(kept))
 
     # Each table must be internally consistent: no picking sg g from one
     # word and sg p from the other, which is what the merged table did.
@@ -253,6 +280,7 @@ def degrades_without_the_corpus_model() -> None:
         check("the Estonian text says so too",
               "sagedusandmeid ei olnud" in (r.get("ambiguity_estonian") or ""),
               str(r.get("ambiguity_estonian")))
+        check_labels_said_once("kott (no corpus)", r)
         # The caller's own evidence still works with no model at all.
         r = server._paradigm("koti")
         check("an inflected input still selects its paradigm",
@@ -826,11 +854,23 @@ def unambiguous_words_never_touch_the_model() -> None:
 
 def every_return_path_carries_paradigm_count() -> None:
     """CI itself reads r["paradigm_count"]; the short-circuit returns used
-    to omit it, so any particle KeyError'd."""
+    to omit it, so any particle KeyError'd.
+
+    `ei` takes the full path as a verb and still has no forms, so it is the
+    case that keeps `summary_estonian` tied to the forms, not the path."""
     print("paradigm_count is on every return path")
-    for word in ("ja", "väga", "qwertyuiopasdf", "kott", "kasutama", "esimene"):
+    for word in ("ja", "väga", "qwertyuiopasdf", "kott", "kasutama", "esimene", "ei"):
         r = server._paradigm(word)
         check(f"{word} has paradigm_count", "paradigm_count" in r, str(sorted(r)))
+        check(f"{word} echoes neither input nor a static note",
+              "input" not in r and "note" not in r, str(sorted(r)))
+        check(f"{word} has summary_estonian exactly when forms is empty",
+              ("summary_estonian" in r) == (r["forms"] == []),
+              f"forms={len(r['forms'])} summary={r.get('summary_estonian')!r}")
+    r = server._paradigm("ei")
+    check("ei reaches the verb path", r.get("word_class") == "verb", str(r.get("word_class")))
+    check("and its summary says there is nothing to inflect",
+          "0 vormi" in (r.get("summary_estonian") or ""), str(r.get("summary_estonian")))
 
 
 def estonian_labels_accompany_every_pos_code() -> None:
@@ -982,7 +1022,7 @@ def the_short_illative_is_in_the_table() -> None:
 
     The table used to stop at the long form. For these words the short one
     is what Estonians write, so a caller reading the table would "correct"
-    a correct majja into majasse, the exact failure this server exists to
+    a correct majja into majasse: the exact failure this server exists to
     prevent, and reported by a reader who had measured how much parallel
     forms cost single-reference scoring.
     """
@@ -1010,16 +1050,19 @@ def the_short_illative_is_in_the_table() -> None:
     r = server._paradigm("maja")
     labels = [e["form_estonian"] for e in r["forms"] if e["form"] == "adt"]
     check("adt is labelled in Estonian", labels == ["ainsuse lühike sisseütlev"], str(labels))
-    check("the note names the slot and warns against 'correcting' it",
-          "lühike sisseütlev" in r["note"] and "corrected" in r["note"],
-          r["note"][-200:])
+    # Said once, in the description the model reads in tools/list, rather
+    # than in a note on every result.
+    desc = next(t.description for t in asyncio.run(server.mcp.list_tools())
+                if t.name == "paradigm")
+    check("the description names the slot and warns against 'correcting' it",
+          "`adt`" in desc and 'never "correct"' in desc
+          and "short illative is often the commoner" in desc, desc[:300])
     # For most words that have one, the short illative is spelled exactly
-    # like the singular partitive (vend: venda is both), so a note that
-    # only said "both are correct" would tell an agent to leave a real
+    # like the singular partitive (vend: venda is both), so a description
+    # that only said "both are correct" would tell an agent to leave a real
     # case error alone.
     check("and says the surface does not confirm the case",
-          "singular partitive" in r["note"] and "does NOT confirm" in r["note"],
-          r["note"][-200:])
+          "singular partitive" in desc and "does not confirm" in desc, desc[:300])
     homographs = [w for w in ("vend", "sõber", "president", "kool")
                   if form_of(server._paradigm(w), "adt") == form_of(server._paradigm(w), "sg p")]
     check("the homograph the warning is about is real", len(homographs) >= 3, str(homographs))

@@ -1259,50 +1259,38 @@ class _TokenizeResult(TypedDict, total=False):
 
 
 class _ParadigmResult(TypedDict, total=False):
-    # EVERY conditional field is nullable, and that is not cosmetic.
-    # `total=False` says a key may be absent, but the MCP layer builds its
-    # structured payload from this schema and fills each declared-but-
-    # absent key with None before validating. A field typed `str` then
-    # fails validation as "None is not of type 'string'", and the tool
-    # answers isError for every word rather than returning a paradigm.
-    # Only the fields this tool sets on every path stay non-nullable.
-    input: str
+    # lemma and partofspeech are None when Vabamorf cannot analyse the
+    # word. Every other optional field is absent when it does not apply.
     lemma: str | None
     partofspeech: str | None
-    partofspeech_estonian: str | None
-    word_class: str | None
-    word_class_estonian: str | None
+    partofspeech_estonian: str
+    word_class: str
+    word_class_estonian: str
     forms: list[dict]
     paradigm_count: int
-    paradigm_key: str | None
-    other_paradigms: list[dict] | None
-    ranked_by_corpus_frequency: bool | None
-    ambiguity_estonian: str | None
-    reading_estonian: str | None
-    invariant: bool | None
-    invariant_estonian: str | None
+    paradigm_key: str
+    other_paradigms: list[dict]
+    ranked_by_corpus_frequency: bool
+    ambiguity_estonian: str
+    reading_estonian: str
+    invariant: bool
+    invariant_estonian: str
     summary_estonian: str
-    note: str
 
 
 class _RelatedWordsResult(TypedDict, total=False):
-    word: str
     matches: list[dict]
 
 
 class _SynonymsResult(TypedDict, total=False):
-    word: str
     synsets: list[dict]
     synset_count: int
 
 
 class _HyphenationResult(TypedDict, total=False):
-    word: str
     breaks: list[int]
     preferred: str
     syllable_count: int
-    summary_estonian: str
-    note: str
 
 
 class _CompoundFamiliarityResult(TypedDict, total=False):
@@ -1947,13 +1935,11 @@ def _paradigm(word: str) -> dict:
     analyses = vm.analyze([word], disambiguate=True)
     if not analyses or not analyses[0].get("analysis"):
         return {
-            "input": word,
             "lemma": None,
             "partofspeech": None,
             "forms": [],
             "paradigm_count": 0,
             "summary_estonian": f"Sõnale '{word}' paradigmat ei leitud.",
-            "note": "Vabamorf couldn't analyse this word.",
         }
     primary = analyses[0]["analysis"][0]
     lemma = primary["lemma"]
@@ -1990,7 +1976,6 @@ def _paradigm(word: str) -> dict:
         class_name = "verb"
     else:
         return {
-            "input": word,
             "lemma": lemma,
             "partofspeech": pos,
             "partofspeech_estonian": _POS_LABELS_ET.get(pos, pos),
@@ -1998,10 +1983,6 @@ def _paradigm(word: str) -> dict:
             "paradigm_count": 0,
             "summary_estonian": (
                 f"Sõnaliik {_pos_et(pos)} ei käändu ega pöördu, paradigmat pole."
-            ),
-            "note": (
-                "This part of speech does not inflect (e.g. adverbs, "
-                "conjunctions, particles). No paradigm to generate."
             ),
         }
 
@@ -2046,10 +2027,17 @@ def _paradigm(word: str) -> dict:
                 chosen_by_input = True
 
     key, forms = tables[0]
-    others = [{"paradigm_key": k, "forms": f} for k, f in tables[1:]]
+    # Every table is built from the same `labels`, so a code the first
+    # table already names gets no second `form_estonian` further down.
+    labelled = {e["form"] for e in forms}
+    others = [
+        {"paradigm_key": k,
+         "forms": [{"form": e["form"], "surface": e["surface"]}
+                   if e["form"] in labelled else e for e in f]}
+        for k, f in tables[1:]
+    ]
 
     result = {
-        "input": word,
         "lemma": lemma,
         "partofspeech": pos,
         "partofspeech_estonian": _POS_LABELS_ET.get(pos, pos),
@@ -2057,29 +2045,13 @@ def _paradigm(word: str) -> dict:
         "word_class_estonian": _WORD_CLASS_ET[class_name],
         "forms": forms,
         "paradigm_count": len(tables),
-        "summary_estonian": (
-            f"Sõna '{lemma}' ({_pos_et(pos)}) paradigma: {len(forms)} vormi."
-        ),
-        "note": (
-            "Generated via Vabamorf.synthesize. Some forms may be marked, "
-            "rare, or stylistically odd: Vabamorf produces what's "
-            "morphologically possible, not what a native speaker would "
-            "necessarily use. Passing an INFLECTED form (e.g. 'koti') is "
-            "better than the bare lemma when a word has several paradigms: "
-            "it tells the server which one you mean. Where a word has both "
-            "'ainsuse sisseütlev' (majasse) and 'ainsuse lühike sisseütlev' "
-            "(majja), both are correct illatives and the short one is often "
-            "the commoner, so neither should be 'corrected' into the other. "
-            "Note that for most words with a short illative the surface is "
-            "identical to the singular partitive (vend: venda is both), so "
-            "finding a word in this table does NOT confirm the case is "
-            "right for the sentence it appears in. Where a slot lists "
-            "several surfaces, the first is the one built on this "
-            "paradigm's own genitive stem (pl all: raamatutele before "
-            "raamatuile); the others are real forms of the same slot, "
-            "typically the literary i-plural."
-        ),
     }
+    if not forms:
+        # `ei` reaches this path as a verb with no forms; a table that is
+        # not empty explains itself.
+        result["summary_estonian"] = (
+            f"Sõna '{lemma}' ({_pos_et(pos)}) paradigma: 0 vormi."
+        )
     if key:
         result["paradigm_key"] = key
     if reading_et:
@@ -2123,41 +2095,32 @@ def _paradigm(word: str) -> dict:
     openWorldHint=False,
 ))
 @_counted
-def paradigm(word: Annotated[str, Field(description="A single Estonian word (lemma or inflected form) to generate the full paradigm for.")]) -> _ParadigmResult:
-    """Generate the full inflection paradigm for an Estonian word.
+def paradigm(word: Annotated[str, Field(description="One Estonian word, lemma or inflected form.")]) -> _ParadigmResult:
+    """Inflection paradigm of one Estonian word from Vabamorf, which
+    generates what is possible, not necessarily idiomatic.
 
-    For nominals (nouns, adjectives, pronouns, cardinals, ordinals,
-    comparatives, superlatives): produces all 14 cases × 2 numbers = up to
-    28 forms, plus the SHORT ILLATIVE (`adt`, ainsuse lühike sisseütlev)
-    for the words that have one: `majja` beside `majasse`, `kätte` beside
-    `käesse`. Both are correct illatives and the short one is often the
-    commoner, so neither should be "corrected" into the other. For most
-    words that have one, though, the short illative is spelled exactly
-    like the singular partitive (`vend`: `venda` is both), so a surface
-    appearing in this table does not confirm the case is right where it
-    was used. For verbs: produces infinitives, the indicative present
-    and past, the conditional, the imperative, the participles, and the
-    umbisikuline tegumood's own finite forms (`kasutatakse`, `kasutati`,
-    `kasutataks`), about 39 in all. Other parts of speech (adverbs,
-    conjunctions, particles) don't inflect, so `forms` is empty.
+    Nominals: up to 28 forms, 14 cases in singular and plural (iga has no
+    plural), plus the short illative `adt` (majja beside majasse) where it
+    exists. Verbs: about 39 common forms, impersonal included, not all
+    Vabamorf can make. A word that does not inflect gets empty `forms` and
+    a `summary_estonian` saying why.
 
-    Each form entry has the Vabamorf form code (e.g. `sg p`, `ksin`),
-    its Estonian label (e.g. `ainsuse osastav`, `tingiv 1.p ainsus`),
-    and the surface form Vabamorf generated. Use `form_estonian` verbatim
-    in Estonian replies. Don't translate the English `form` code.
+    `forms` entries: `form` (Vabamorf code), `form_estonian` (its Estonian
+    name), `surface`. A list `surface` holds correct variants, any built on
+    this paradigm's own stem first (raamatutele before the literary
+    raamatuile).
 
-    AMBIGUOUS LEMMAS. Some lemmas belong to more than one inflection type
-    (`kott` inflects as either `koti` or `kota`, two different words that
-    share a nominative). `forms` is then one internally consistent
-    paradigm, `paradigm_key` names it by its singular genitive,
-    `paradigm_count` says how many exist, and the rest are in
-    `other_paradigms`. Read `ambiguity_estonian` before quoting a form.
-    **Pass an inflected form (`koti`) rather than the bare lemma when you
-    know which word you mean**: that selects the paradigm exactly.
+    Both illatives are correct and the short illative is often the
+    commoner: never "correct" one into the other. `adt` is usually spelled
+    like the singular partitive `sg p` (vend: venda), so a surface in this
+    table does not confirm its case in a sentence.
 
-    Phase-1 scope: covers the most commonly-needed forms per word class,
-    not every theoretical form Vabamorf can produce. Single-word input,
-    capped at 200 characters.
+    `paradigm_count` > 1 means several inflection types (kott: koti or
+    kota): `forms` is the first-ranked, named by `paradigm_key` (its
+    singular genitive), and the rest are in `other_paradigms`, which give
+    `form_estonian` only for a code `forms` lacks. Read
+    `ambiguity_estonian` before quoting a form. Pass an inflected form
+    (koti) to select the type you mean.
     """
     return _paradigm(word)
 
@@ -2298,33 +2261,14 @@ def named_entities(text: Annotated[str, Field(description="Estonian text.")]) ->
     openWorldHint=False,
 ))
 @_counted
-def find_related_words(word: Annotated[str, Field(description="A single Estonian word to find semantically related words for.")], n: Annotated[int, Field(description="How many nearest-neighbour words to return (1-50).")] = 10) -> _RelatedWordsResult:
-    """Find Estonian words semantically similar to the input via fastText.
-
-    Returns the top-n nearest neighbours by cosine similarity over a
-    pre-trained Estonian fastText model (Common Crawl + Wikipedia, 2018).
-    Useful for breaking repetition, finding alternative phrasings, or
-    expanding vocabulary when WordNet's exact-meaning synonyms aren't
-    enough.
-
-    Distinct from `synonyms`: that one returns WordNet synsets, words
-    with the same meaning. This one returns words that *pattern* with
-    the input in real Estonian text, which can include near-synonyms,
-    related concepts, and (sometimes) antonyms.
-
-    Known quirks of the embedding model:
-    - **Inflections crowd the top results** for some words. fastText
-      sees `kasutama` and `kasutada` as related because the surface
-      forms share subword n-grams; you may want to lemmatize matches
-      yourself to dedupe.
-    - **Antonyms can appear** because antonyms occur in similar
-      contexts (`tark` may surface `loll`). Treat the list as
-      "semantically nearby" rather than "synonymous."
-    - **Polysemy is not disambiguated.** `lahe` (which means both
-      "bay" and the colloquial "cool") will return whichever sense
-      dominates the training data.
-
-    Single-word input only, capped at 200 characters.
+def find_related_words(word: Annotated[str, Field(description="One Estonian word, any form.")], n: Annotated[int, Field(description="How many nearest-neighbour words to return (1-50).")] = 10) -> _RelatedWordsResult:
+    """Nearest neighbours of an Estonian word in a fastText model (Common
+    Crawl and Wikipedia), ranked by cosine `score`. Unlike `synonyms` (same
+    meaning, WordNet), these are words used in similar contexts:
+    near-synonyms, related concepts, inflections of the input itself
+    (lemmatize to dedupe) and sometimes antonyms (tark: loll). Senses are
+    not separated: `lahe` gets whichever of "bay" and "cool" dominates the
+    corpus. Any string, even a typo, gets neighbours.
     """
     _check_text(word, limit=MAX_WORD_CHARS, name="word")
     if any(ch.isspace() for ch in word):
@@ -2333,7 +2277,6 @@ def find_related_words(word: Annotated[str, Field(description="A single Estonian
     kv = _embeddings()
     matches = kv.most_similar(word, topn=n)
     return {
-        "word": word,
         "matches": [
             {"word": w, "score": round(float(s), 4)} for w, s in matches
         ],
@@ -2347,27 +2290,17 @@ def find_related_words(word: Annotated[str, Field(description="A single Estonian
     openWorldHint=False,
 ))
 @_counted
-def synonyms(word: Annotated[str, Field(description="A single Estonian word to look up WordNet synonyms for.")], max_synsets: Annotated[int, Field(description="Maximum number of word-sense synsets to return.")] = 5) -> _SynonymsResult:
-    """Look up Estonian synonyms via WordNet.
+def synonyms(word: Annotated[str, Field(description="One Estonian word in dictionary form, spelled as the dictionary spells it (kohv, not kohvi or Kohv).")], max_synsets: Annotated[int, Field(description="Maximum number of word-sense synsets to return.")] = 5) -> _SynonymsResult:
+    """Estonian WordNet synsets for a word, one per sense, each with
+    `lemmas` (the synonyms), `definition` and any `examples`.
+    `synset_count` is the total before `max_synsets` cuts the list.
 
-    Returns synsets (groups of synonymous lemmas) for the input word, each
-    with its definition and example usages. Useful when you want Claude to
-    pick a different word with the same meaning, e.g. swap an over-used
-    verb in marketing copy. Word-sense ambiguity is preserved: a polysemous
-    word returns multiple synsets, one per meaning. Input capped at 200
-    characters.
-
-    WORD-FIT CHECK: when the question is "is this the right word here?"
-    rather than "give me an alternative", READ EACH `definition` and test
-    it against the user's actual context. Do not just harvest `lemmas`.
-    Estonian glosses routinely carry a domain constraint that decides the
-    answer: `korpus` returns the sense "kirjaliku või suulise teksti
-    elektrooniline kogu", so calling a set of IMAGES a `korpus` is wrong
-    however natural it sounds in ML jargon; `andmestik` carries no such
-    constraint. A gloss naming a medium, field, or material is a
-    constraint on where the word may be used. Note also that a word can
-    be well-formed, correctly spelled and still the wrong register. For
-    that, check_officialese and classify_register, not this tool.
+    For "is this the right word here?", read each `definition` against the
+    context, not just `lemmas`. A gloss naming a medium, field or material
+    limits where the word fits: `korpus` is "kirjaliku või suulise teksti
+    elektrooniline kogu", so a set of images is not a korpus, while
+    `andmestik` has no such limit. Register is a different question:
+    check_officialese, classify_register.
     """
     _check_text(word, limit=MAX_WORD_CHARS, name="word")
     if any(ch.isspace() for ch in word):
@@ -2386,14 +2319,13 @@ def synonyms(word: Annotated[str, Field(description="A single Estonian word to l
     synsets = wn[word] or []
     out: list[dict] = []
     for s in synsets[:max_synsets]:
-        out.append({
-            "name": s.name,
-            "pos": s.pos,
-            "definition": s.definition,
-            "examples": list(s.examples) if s.examples else [],
-            "lemmas": list(s.lemmas),
-        })
-    return {"word": word, "synsets": out, "synset_count": len(synsets)}
+        # The POS is in `name` (korpus.n.01), so it is not repeated.
+        entry: dict = {"name": s.name, "definition": s.definition}
+        if s.examples:
+            entry["examples"] = list(s.examples)
+        entry["lemmas"] = list(s.lemmas)
+        out.append(entry)
+    return {"synsets": out, "synset_count": len(synsets)}
 
 
 def _classify_register(text: str) -> dict:
@@ -2834,17 +2766,7 @@ def _check_hyphenation(word: str) -> dict:
     from estnltk.vabamorf.morf import syllabify_word
     syls = syllabify_word(word)
     if len(syls) < 2:
-        return {
-            "word": word,
-            "breaks": [],
-            "preferred": word,
-            "syllable_count": len(syls),
-            "summary_estonian": "Sõna on liiga lühike poolitamiseks.",
-            "note": (
-                "Single-syllable Estonian words can't be hyphenated "
-                "across lines."
-            ),
-        }
+        return {"breaks": [], "preferred": word, "syllable_count": len(syls)}
     breaks: list[int] = []
     offset = 0
     for _i, s in enumerate(syls[:-1]):
@@ -2861,27 +2783,7 @@ def _check_hyphenation(word: str) -> dict:
         last = b
     pieces.append(word[last:])
     preferred = "·".join(pieces) if breaks else word
-    return {
-        "word": word,
-        "breaks": breaks,
-        "preferred": preferred,
-        "syllable_count": len(syls),
-        "summary_estonian": (
-            f"Lubatud poolitamiskohad: {breaks}." if breaks
-            else "Sõnal puuduvad turvalised poolitamiskohad."
-        ),
-        "note": (
-            "Phase-1 hyphenation: syllable-boundary based, with the "
-            "edge-character rule that you can't leave fewer than 2 "
-            "characters before or after the break. Compound-boundary "
-            "preference is NOT applied yet (Estonian poolitamine "
-            "prefers compound seams over syllable seams); for compounds "
-            "like 'koolimaja' the morphologically-preferred break is at "
-            "the compound seam, which this tool may not surface. "
-            "Treat the offsets as a safe-break list, not an authoritative "
-            "preference."
-        ),
-    }
+    return {"breaks": breaks, "preferred": preferred, "syllable_count": len(syls)}
 
 
 @mcp.tool(annotations=ToolAnnotations(
@@ -2891,18 +2793,14 @@ def _check_hyphenation(word: str) -> dict:
     openWorldHint=False,
 ))
 @_counted
-def check_hyphenation(word: Annotated[str, Field(description="A single Estonian word (no whitespace) to find safe line-break positions for.")]) -> _HyphenationResult:
-    """Return safe line-break positions for an Estonian word (poolitamine).
-
-    Different from `syllabify` (which is phonological): this returns
-    character offsets where a typesetter can legally break the word
-    across lines. Applies the no-orphan-edge rule (don't leave fewer
-    than 2 characters before or after the break point).
-
-    Phase-1 limitation: pure syllable-boundary based. Compound-boundary
-    preference (Estonian poolitamine prefers `kooli-maja` over
-    `koo-limaja`) is not yet applied. Input must be a single word with
-    no whitespace, capped at 200 characters.
+def check_hyphenation(word: Annotated[str, Field(description="One Estonian word, no whitespace.")]) -> _HyphenationResult:
+    """Line-break positions in one Estonian word (poolitamine); use only
+    when line breaks matter. `breaks`: character offsets at syllable
+    boundaries, at least 2 characters from either end; `preferred`: the
+    word with each break marked ·. Compound seams, which Estonian prefers,
+    are among the breaks but not singled out: choose the seam yourself
+    (kooli·maja). A break can also split one vowel off a compound part
+    (maao-manik in maa·o·ma·nik); skip those.
     """
     return _check_hyphenation(word)
 
