@@ -893,6 +893,83 @@ _COMMA_BEFORE: frozenset[str] = frozenset({
     "mistõttu", "millepärast", "kuhu",
 })
 
+# Punctuation that already sets off what follows it.
+_CLAUSE_PUNCT: frozenset[str] = frozenset({
+    ",", ";", ":", "(", "\u2014", "\u2013", "-", ".", "!", "?", "...", "…",
+})
+
+# The word after one of these opens a sentence.
+_SENTENCE_END: frozenset[str] = frozenset({".", "!", "?", "...", "…"})
+
+# A conjunction right before a subordinator takes the clause comma in
+# front of itself: `..., ja et ...`, `sest et`, `aga kuna` (EKI teatmik,
+# Koma: koma nihkumine). `vaid` is left out: it is also the adverb
+# "only" (tahan vaid, et ...).
+_COMMA_MOVES_BEFORE: frozenset[str] = frozenset({
+    "ja", "ning", "ega", "ehk", "või", "aga", "kuid", "ent", "sest", "et",
+    "kui", "nagu", "kuna", "kuigi", "ehkki",
+})
+
+# Two-part connectives whose second part is in _COMMA_BEFORE, keyed by
+# the first part (EKI teatmik, Koma: ühendsidendid). The comma goes
+# before the whole connective (Sadas vihma, nii et jäime koju) or, for
+# `open` and `adverb` ones, between the parts when the first part
+# belongs to the main clause (Tulin selleks, et aidata).
+#   open:       either place is right.
+#   adverb:     read as the main verb's own adverb, comma between, when
+#               a finite verb stands right before it (Tegin nii, et ...;
+#               Tahan ainult, et ...).
+#   closed:     never a comma between (Ta lahkus, ilma et ...).
+#   indefinite: `ükskõik kuhu` (= kuhu tahes) opens no clause; only the
+#               predicative `on ükskõik, kuhu ...` takes a comma.
+_ET: frozenset[str] = frozenset({"et"})
+_CONNECTIVES: dict[tuple[str, ...], tuple[frozenset[str], str]] = {
+    ("nii",): (frozenset({"et", "nagu"}), "adverb"),
+    ("ainult",): (_ET, "adverb"),
+    ("selleks",): (_ET, "open"),
+    ("sellepärast",): (_ET, "open"),
+    ("seepärast",): (_ET, "open"),
+    ("seetõttu",): (_ET, "open"),
+    ("eeldusel",): (_ET, "open"),
+    ("tingimusel",): (_ET, "open"),
+    ("selle", "asemel"): (_ET, "open"),
+    ("hoolimata", "sellest"): (_ET, "open"),
+    ("olenemata", "sellest"): (_ET, "open"),
+    ("vaatamata", "sellele"): (_ET, "open"),
+    ("ilma",): (_ET, "closed"),
+    ("olgugi",): (_ET, "closed"),
+    ("vaevalt",): (_ET, "closed"),
+    ("mitte",): (_ET, "closed"),
+    ("peaasi",): (_ET, "closed"),
+    ("ükskõik",): (frozenset({"kuhu"}), "indefinite"),
+}
+
+# A connective's first part right after one of these particles is
+# stressed and belongs to the main clause, so the comma goes between the
+# parts (Tulin just selleks, et aidata; mitte selleks, et ..., vaid ...).
+_FOCUS_PARTICLES: frozenset[str] = frozenset({
+    "just", "täpselt", "ka", "ikka", "mitte", "ainult", "vaid", "üksnes",
+    "eriti", "eelkõige", "eeskätt", "peamiselt", "lihtsalt", "nimelt",
+})
+
+# Closed connectives whose parts a comma never separates, so an existing
+# `ilma, et` is an error. `peaasi, et` can be `peaasi (on), et`.
+_NO_COMMA_INSIDE: frozenset[str] = frozenset({"ilma", "olgugi"})
+
+# Words that open a clause of their own, so a finite verb after them is
+# not the verb of a `nagu` phrase before them.
+_CLAUSE_OPENERS: frozenset[str] = frozenset({
+    "kes", "mis", "kus", "kuhu", "kust", "kuidas", "millal", "miks",
+    "milline", "missugune", "kumb", "kas", "mistõttu", "millepärast",
+})
+
+# Vabamorf verb form codes that are no predicate on their own:
+# infinitives, the des and mata forms, participles.
+_NONFINITE_VERB_FORMS: frozenset[str] = frozenset({
+    "da", "des", "ma", "mas", "mast", "maks", "mata", "tama",
+    "nud", "tud", "v", "tav",
+})
+
 
 # Lexicons for check_redundancy: semantic doubling that's
 # grammatically fine but reads redundant to a native speaker. Kept
@@ -2712,6 +2789,115 @@ def check_compounds(text: Annotated[str, Field(description="Estonian text.")]) -
     return _check_compounds(text)
 
 
+@lru_cache(maxsize=4096)
+def _readings_out_of_context(word: str) -> tuple[tuple[str, str, str], ...]:
+    """Every Vabamorf reading of `word` as (lemma, pos, form), undisambiguated.
+
+    The sentence-level disambiguation keeps one reading, sometimes the
+    wrong one: `tuli` in `punane nagu tuli` becomes the verb, and the
+    imperative in `Tee nagu tahad` becomes the noun.
+    """
+    found = _vabamorf().analyze([word], disambiguate=False, guess=True, propername=True)
+    rows = (found[0].get("analysis") or []) if found else []
+    return tuple((r["lemma"], r["partofspeech"], r["form"]) for r in rows)
+
+
+def _finite_form(form: str) -> bool:
+    """True for a Vabamorf verb form code that is a predicate: a personal
+    or impersonal form in any mood, or a negation (`neg ...`: ei, pole)."""
+    return form.startswith("neg") or (form != "" and form not in _NONFINITE_VERB_FORMS)
+
+
+def _finite_in_context(span) -> bool:
+    """The sentence-level analysis reads `span` as a finite verb."""
+    return any(a.partofspeech == "V" and _finite_form(a.form) for a in span.annotations)
+
+
+def _surely_finite(span) -> bool:
+    """Read as a finite verb in context, and out of context as nothing but
+    a verb or a participle (`vajavad` is also the plural of `vajav`), so
+    `tuli`, also a noun, does not count. `ei` counts where it is read as
+    the verb (ei teadnud), not the particle (ei keegi)."""
+    if not _finite_in_context(span):
+        return False
+    return span.text.lower() == "ei" or all(
+        pos in ("V", "A") for _lemma, pos, _form in _readings_out_of_context(span.text))
+
+
+def _maybe_finite(spans: list, k: int) -> bool:
+    """spans[k] is read as a finite verb, or opens a sentence and is one out
+    of context: the disambiguation reads a sentence-initial imperative as a
+    noun (Tee nagu tahad). Pronouns (Sina, also an imperative) do not count."""
+    span = spans[k]
+    if _finite_in_context(span):
+        return True
+    if k > 0 and spans[k - 1].text not in _SENTENCE_END:
+        return False
+    return (not any(a.partofspeech == "P" for a in span.annotations)
+            and any(pos == "V" and _finite_form(form)
+                    for _lemma, pos, form in _readings_out_of_context(span.text)))
+
+
+def _clause_boundary(span) -> bool:
+    """Punctuation, a conjunction, or a word that opens a clause."""
+    if not any(ch.isalnum() for ch in span.text):
+        return True
+    return any(a.partofspeech == "J" or a.lemma in _CLAUSE_OPENERS for a in span.annotations)
+
+
+def _clause_indices(spans: list, i: int, step: int):
+    """Indices after (step 1) or before (step -1) spans[i], up to the
+    nearest clause boundary."""
+    k = i + step
+    while 0 <= k < len(spans) and not _clause_boundary(spans[k]):
+        yield k
+        k += step
+
+
+def _nagu_opens_clause(spans: list, i: int) -> bool:
+    """`nagu` at spans[i] opens a clause, which takes a comma, rather than
+    a verbless comparison, which takes none (EKI: Vaatas mind, nagu oleksin
+    võõras; Vaatas mind nagu võõrast). A finite verb must follow before the
+    next boundary, and the main clause must have one of its own, or the
+    verb after is the main clause's (Kassid nagu kõik koduloomad vajavad
+    hoolitsust).
+    """
+    return (any(_surely_finite(spans[k]) for k in _clause_indices(spans, i, 1))
+            and any(_maybe_finite(spans, k) for k in _clause_indices(spans, i, -1)))
+
+
+def _ilma_in_main_clause(spans: list, s: int) -> bool:
+    """`ilma` at spans[s] is not the first part of `ilma et`: it is the noun
+    ilm (ootas ilusat ilma, et minna randa) or the main clause's adverb
+    after jääma, olema or an elative (jäi ilma, et teised saaksid; jäi
+    rahast ilma)."""
+    if any(a.lemma == "ilm" for a in spans[s].annotations):
+        return True
+    return s > 0 and any(a.lemma in ("jääma", "olema") or a.form.split()[-1:] == ["el"]
+                         for a in spans[s - 1].annotations)
+
+
+def _first_part_in_main_clause(spans: list, lowers: list[str], first: int, kind: str) -> bool:
+    """The connective's first part at spans[first] belongs to the main
+    clause, so the comma goes before `et` as for a lone conjunction: it
+    follows a focus particle (Tulin just selleks, et ...), it is nii or
+    ainult right after a finite verb (Tegin nii, et ...), or it is ilma as
+    a noun or the main clause's adverb."""
+    return (lowers[first - 1] in _FOCUS_PARTICLES
+            or (kind == "adverb" and _maybe_finite(spans, first - 1))
+            or (lowers[first] == "ilma" and _ilma_in_main_clause(spans, first)))
+
+
+def _connective_start(lowers: list[str], i: int) -> tuple[int, str] | None:
+    """Where a two-part connective ending at lowers[i] starts, and its kind."""
+    for n in (2, 1):
+        if i >= n:
+            entry = _CONNECTIVES.get(tuple(lowers[i - n:i]))
+            if entry is not None and lowers[i] in entry[0]:
+                return i - n, entry[1]
+    return None
+
+
 def _check_punctuation(text: str) -> dict:
     """Phase-1 punctuation checker: comma before subordinating words."""
     _check_text(text)
@@ -2719,25 +2905,63 @@ def _check_punctuation(text: str) -> dict:
     t = Text(text)
     t.tag_layer(["morph_analysis"])
     spans = list(t.morph_analysis)
+    lowers = [span.text.lower() for span in spans]
 
-    issues: list[dict] = []
-    skip_prev = {",", ";", ":", "(", "\u2014", "\u2013", "-", ".", "!", "?", "...", "…"}
-    for i, span in enumerate(spans):
-        word_lower = span.text.lower()
-        if word_lower not in _COMMA_BEFORE:
-            continue
-        if i == 0:
-            continue
-        prev = spans[i - 1]
-        if prev.text in skip_prev:
-            continue
-        issues.append({
-            "word": span.text,
-            "position": span.start,
+    def opens_clause(k: int) -> bool:
+        # Nothing before spans[k] calls for a comma: it starts the text or
+        # a sentence, follows punctuation, or follows a conjunction that
+        # takes the comma in front of itself.
+        return (k == 0 or spans[k - 1].text in _CLAUSE_PUNCT
+                or lowers[k - 1] in _COMMA_MOVES_BEFORE)
+
+    def missing_comma(start: int, end: int) -> dict:
+        words = " ".join(span.text for span in spans[start:end + 1])
+        return {
+            "word": words,
+            "position": spans[start].start,
             "rule": "comma-before-clause-conjunction",
             "rule_estonian": "koma alistava sidesõna ees",
-            "suggestion": f", {span.text}",
-        })
+            "suggestion": f", {words}",
+        }
+
+    issues: list[dict] = []
+    for i in range(1, len(spans)):
+        if lowers[i] not in _COMMA_BEFORE:
+            continue
+        # `ilma, et`: the comma belongs before the whole connective.
+        if (lowers[i] == "et" and i >= 2 and spans[i - 1].text == ","
+                and lowers[i - 2] in _NO_COMMA_INSIDE
+                and not (lowers[i - 2] == "ilma" and _ilma_in_main_clause(spans, i - 2))):
+            first, conj = spans[i - 2].text, spans[i].text
+            issues.append({
+                "word": f"{first}, {conj}",
+                "position": spans[i - 2].start,
+                "rule": "no-comma-inside-conjunction",
+                "rule_estonian": "ühendsidendi osade vahele koma ei panda",
+                "suggestion": (f"{first} {conj}" if opens_clause(i - 2)
+                               else f", {first} {conj}"),
+            })
+            continue
+        if opens_clause(i):
+            continue
+        if lowers[i] == "nagu" and not _nagu_opens_clause(spans, i):
+            continue
+        start = i
+        connective = _connective_start(lowers, i)
+        if connective is not None:
+            first, kind = connective
+            if opens_clause(first):
+                # The comma stands before the whole connective, or the
+                # connective opens the sentence, where none is needed.
+                continue
+            if kind == "indefinite":
+                # ükskõik kuhu = kuhu tahes; only `on ükskõik, kuhu ...`
+                # (= does not matter) has a clause after ükskõik.
+                if not any(a.lemma == "olema" for a in spans[first - 1].annotations):
+                    continue
+            elif not _first_part_in_main_clause(spans, lowers, first, kind):
+                start = first
+        issues.append(missing_comma(start, i))
 
     return {
         "issues": issues,
@@ -2757,12 +2981,11 @@ def _check_punctuation(text: str) -> dict:
 @_counted
 def check_punctuation(text: Annotated[str, Field(description="Estonian text.")]) -> _CheckResult:
     """Flags a missing comma before et, kuna, sest, kuigi, kuid, vaid, nagu,
-    mistõttu, millepärast or kuhu.
+    mistõttu, millepärast or kuhu, and before the whole of a connective
+    such as nii et, ilma et or selleks et.
 
-    Not checked: kui, mis, kes (their comma depends on meaning), list and
-    apposition commas, dashes, colons. In nii et, ilma et and selleks et the
-    comma goes before the pair, not before et; nagu in a verbless
-    comparison (tugev nagu karu) takes none.
+    Not checked: kui, mis, kes (their comma depends on meaning), nagu with
+    no finite verb after it, list and apposition commas, dashes, colons.
     """
     return _check_punctuation(text)
 
