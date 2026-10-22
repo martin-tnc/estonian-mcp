@@ -7,6 +7,66 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-22
+
+Four bugs the 0.8.0 review found. Every fix was attacked with new Estonian
+probes and held to one bar: no input that 0.8.0 got right may come out
+wrong, except the trade-offs named below.
+
+### Fixed
+
+- **`check_defined_terms` missed definitions in Estonian quotes.**
+  `(edaspidi „Leping“)` closes with U+201C, which the tool did not
+  recognise, so it returned no defined terms. Every common pairing now
+  works alike (`«…»`, `„…“`, `„…”`, `“…”`, `"…"` and mixes), so a term
+  defined once in `«»` and once in `„“` raises duplicate-definition. A
+  quoted definition must follow `(edaspidi` or `, edaspidi`, so an
+  adverbial `lubas edaspidi „kõik võlad tasuda“` defines nothing in any
+  quote style (0.8.0 reported it with `«»`). An unclosed quote no longer
+  swallows the definitions after it. Two slow paths are gone: an unclosed
+  quote before a long run of spaces took 177 s, and counting thousands of
+  distinct terms took 10 to 19 s on 100,000 characters; both now take
+  well under a second.
+- **`paradigm` said proper nouns do not inflect.** Vabamorf tags a name
+  `H`, which the tool did not count as a nominal, so `Tallinn`, `Tartu`
+  and `Jaan` came back with no forms and `Sõnaliik H ei käändu ega
+  pöördu`. Names now get their table from Vabamorf's lexicon, labelled
+  `pärisnimi` (`Tallinna`, `Tallinnasse`, `Jaanid`). A name the lexicon
+  lacks (`Google`) gets an empty table and a summary saying so, never
+  guessed forms, and so does a name part the lexicon lists only inside
+  longer names (`Charlotte`, `New`). A capitalised common word, as at
+  the start of a sentence, gets the lowercase word's table (`Raamat`,
+  `Pikk`, `Töös`), where 0.8.0 returned nothing. A hyphenated name the
+  disambiguator cut short (`Lõuna-Eesti` read as `Lõuna-Eest`) gets the
+  lexicon's lemma. Lowercase input is unchanged.
+- **`check_numbers` corrupted Estonian decimals and flagged times, dates
+  and clause numbers.** A single comma group is an Estonian decimal
+  (`1,250 kg`, `3,142`), and the suggestion `1 250` multiplied it by a
+  thousand; now only two or more groups (`1,500,000`) or a group before a
+  period decimal (`1,500.50` → `1 500,50`) are flagged, as one issue. The
+  period rule reads the word before the number and the characters after
+  it, so times after `kell` and time ranges (`kell 10.30`, `9.15-17.00`),
+  dates (`14.05`), clause, section and version numbers (`punkt 3.2`,
+  `p-s 5.3`, `4.13. Tellija tasub`, `## 3.2`, `Python 3.12`, `GPT-3.5`)
+  and race times (`1.47,58`) pass, while a unit, currency or measure
+  still flags (`2.5%`, `12.5 km`, `4.08 m²`, `CHF 12.50`, `pH 7.4`).
+  Every rule reads a bounded window: a 100,000-character input takes
+  under a second. Trade-offs: a lone English thousands group
+  (`437,811 inimest`), a date-shaped decimal with no unit (`1.05 ja`) and
+  a range shaped like a time range (`1.05-1.20`) now pass. A time
+  without `kell` mid-sentence (`väljub 8.47 ja`) is still flagged, as before.
+- **`check_punctuation` flagged correct commas before two-part
+  connectives and verbless `nagu` comparisons.** `Sadas vihma, nii et
+  jäime koju`, `Tulin, selleks et aidata` and `Ta lahkus, ilma et oleks
+  hüvasti jätnud` were flagged at `et`. A comma before the whole
+  connective now passes (EKI). With no comma at all the comma is still
+  asked for before `et`, except in `ilma et` and `olgugi et`, which EKI
+  never splits: there it goes before the pair (`, ilma et`), where 0.8.0
+  suggested the wrong `ilma, et`. A `nagu` comparison with no verb before
+  the sentence ends passes (`Ta on tugev nagu karu.`); `nagu` before a
+  clause, including one that drops `olema` (`nagu kokku lepitud`), is
+  flagged as before.
+
 ## [0.8.0] - 2026-10-22
 
 Every caller pays in tokens for what this server sends: the tool list on

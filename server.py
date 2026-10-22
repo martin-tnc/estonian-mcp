@@ -91,7 +91,7 @@ DEFAULT_STATIC_RATE_LIMIT_PER_MINUTE = 60
 _TRUSTED_PROXY_HOPS = max(0, int(os.environ.get("ESTNLTK_MCP_TRUSTED_PROXY_HOPS", "1")))
 
 # Bumped manually in lockstep with pyproject.toml's [project].version.
-SERVER_VERSION = "0.8.0"
+SERVER_VERSION = "0.8.1"
 
 # Favicons served alongside the MCP endpoint so Google's favicon service
 # (used by the Anthropic Connectors Directory + tool-call UI in Claude)
@@ -2962,7 +2962,7 @@ def check_hyphenation(word: Annotated[str, Field(description="One Estonian word,
 #   all capitals (BMI 31.2 is a measure), that Vabamorf's lexicon does not
 #   know (Python 3.12, not Tartus 8.7). A lookup can take 2 ms, so a text
 #   gets _NUM_LOOKUPS of them; past that a name is read as known.
-# A bare time (algab 10.30) is flagged: only kell tells it from a decimal.
+# A bare time mid-sentence (väljub 8.47 ja) is flagged: only kell tells it from a decimal.
 _NUM_DECIMAL_RE = re.compile(
     r"(?<![\d.])(\d+)\.(\d+)(?!\d)(?!\.(?!\s*\Z|\s+[^\s\da-zõäöüšž]))")
 _NUM_THOUSANDS_RE = re.compile(r"(?<!\d)(\d{1,3}(?:,\d{3})+)(?:\.(\d+))?(?!\d)")
