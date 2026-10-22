@@ -91,7 +91,7 @@ DEFAULT_STATIC_RATE_LIMIT_PER_MINUTE = 60
 _TRUSTED_PROXY_HOPS = max(0, int(os.environ.get("ESTNLTK_MCP_TRUSTED_PROXY_HOPS", "1")))
 
 # Bumped manually in lockstep with pyproject.toml's [project].version.
-SERVER_VERSION = "0.8.1"
+SERVER_VERSION = "0.8.2"
 
 # Favicons served alongside the MCP endpoint so Google's favicon service
 # (used by the Anthropic Connectors Directory + tool-call UI in Claude)
@@ -2965,7 +2965,7 @@ def check_hyphenation(word: Annotated[str, Field(description="One Estonian word,
 # A bare time mid-sentence (väljub 8.47 ja) is flagged: only kell tells it from a decimal.
 _NUM_DECIMAL_RE = re.compile(
     r"(?<![\d.])(\d+)\.(\d+)(?!\d)(?!\.(?!\s*\Z|\s+[^\s\da-zõäöüšž]))")
-_NUM_THOUSANDS_RE = re.compile(r"(?<!\d)(\d{1,3}(?:,\d{3})+)(?:\.(\d+))?(?!\d)")
+_NUM_THOUSANDS_RE = re.compile(r"(?<![\d.,])(\d{1,3}(?:,\d{3})+)(?:\.(\d+))?(?!\d)")
 _NUM_WORD_RE = re.compile(r"\S+")
 _NUM_OPENERS = "([{«\"„“'"
 _NUM_CASE_END_RE = re.compile(r"(?<=.)-[a-zõäöüšž]{1,5}\Z")
@@ -3083,20 +3083,27 @@ def _check_numbers(text: str) -> dict:
     _check_text(text)
     issues: list[dict] = []
 
-    # Thousands: only where the comma cannot be the Estonian decimal comma.
+    # Thousands: comma-grouped digits are the English thousands separator.
+    # One group (1,250) could also be an Estonian decimal with three places;
+    # the writer knows which, and the description says to leave a decimal
+    # alone. 0,125 can only be a decimal. The suggestion follows EKI: four
+    # digits are written together (1250), five and more in groups of three
+    # (12 500, 1 500 000).
     with_decimals: set[int] = set()
     for m in _NUM_THOUSANDS_RE.finditer(text):
         groups, decimals = m.groups()
-        if decimals is None and groups.count(",") < 2:
+        if groups.startswith("0,"):
             continue
         if decimals is not None:
             with_decimals.add(m.end())
+        digits = groups.replace(",", "")
+        whole = digits if len(digits) <= 4 else f"{int(digits):,}".replace(",", " ")
         issues.append({
             "text": m.group(0),
             "position": m.start(),
             "rule": "thousands-separator",
             "rule_estonian": "tuhandeliste eraldaja",
-            "suggestion": groups.replace(",", " ") + (f",{decimals}" if decimals else ""),
+            "suggestion": whole + (f",{decimals}" if decimals else ""),
         })
 
     cands = list(_NUM_DECIMAL_RE.finditer(text))
@@ -3134,8 +3141,9 @@ def check_numbers(text: Annotated[str, Field(description="Estonian text.")]) -> 
     """Flags English-style number separators (numbrite õigekirjutus):
     - `decimal-separator`: 3.14 → 3,14; skips kell 10.30, 14.05, punkt
       3.2, Python 3.12, but flags a bare 10.30.
-    - `thousands-separator`: 1,500,000 → 1 500 000 (ideally non-breaking
-      spaces; `suggestion` has plain ones); 1,250 is a decimal.
+    - `thousands-separator`: 1,250 → 1250, 1,500,000 → 1 500 000 (EKI
+      groups from five digits; ideally non-breaking spaces, `suggestion`
+      has plain ones). If 1,250 was meant as the decimal 1,25, keep it.
 
     Spelling out small numbers is not checked.
     """

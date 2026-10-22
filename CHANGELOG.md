@@ -7,6 +7,22 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-10-22
+
+### Fixed
+
+- **`check_numbers` stopped flagging `1,250`, and suggested a space EKI
+  does not write.** 0.8.1 read a single comma group as a possible
+  Estonian three-place decimal and let it pass, so the commonest English
+  slip, `1,250` for one thousand two hundred fifty, went unflagged. It is
+  flagged again; the writer knows which was meant, and the description
+  says to keep it when the decimal 1,25 is meant. `0,125` can only be a
+  decimal and is never flagged. Suggestions now follow EKI's grouping:
+  four digits are written together and five or more in groups of three,
+  so `1,250` → `1250`, `1,500.50` → `1500,50`, `12,500` → `12 500` and
+  `1,500,000` → `1 500 000` (0.8.0 and 0.8.1 suggested `1 250` and
+  `1 500,50`).
+
 ## [0.8.1] - 2026-10-22
 
 Four bugs the 0.8.0 review found. Every fix was attacked with new Estonian

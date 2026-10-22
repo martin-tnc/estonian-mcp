@@ -1,9 +1,9 @@
 """Tests for `check_numbers`.
 
-0.8.0 read no context: every d.d was an English decimal and every comma
-group a thousands separator, so it flagged times, dates, section and
-version numbers and Estonian decimals (1,250 kg), and it missed every
-decimal before a sentence-final period (Pi on 3.1416.). The rules now in
+0.8.0 read no context: every d.d was an English decimal, so it flagged
+times, dates, section and version numbers, and it missed every decimal
+before a sentence-final period (Pi on 3.1416.). A comma group is the
+English thousands separator, written 1250 / 12 500 in Estonian. The rules now in
 server.py skip a number on a bounded window around it, and the bar is that
 the tool does at least as well as 0.8.0 on every input. The trade-offs the
 design accepts are pinned here as such, each with its reason, so a change
@@ -59,17 +59,24 @@ def expect_decimals(cases: dict[str, list[str]]) -> None:
 
 def thousands() -> None:
     print("thousands-separator")
-    # One group is an Estonian decimal. Trade-off: 437,811 inimest is missed.
-    expect_clean(["1,250 kg", "Pi on umbes 3,142", "Kaal oli 1,500.",
-                  "Päeval 14.05.2026 maksis pi umbes 3,14.",
-                  "Linnas elab 437,811 inimest."])
+    # 0,125 can only be a decimal, and a two-place decimal is no group.
+    expect_clean(["Kurss oli 0,125.", "Päeval 14.05.2026 maksis pi umbes 3,14.",
+                  "Aeg 1.47,580 oli rekord."])
     cases = {
+        # One group is the English separator unless the writer meant a
+        # three-place decimal (the description says to keep it then). EKI
+        # writes four digits together and groups from five.
+        "Hind on 1,250 eurot.": [("thousands-separator", "1,250", "1250")],
+        "Kaal oli 1,500.": [("thousands-separator", "1,500", "1500")],
+        "Linnas elab 437,811 inimest.": [("thousands-separator", "437,811", "437 811")],
+        "Summa 12,500 eurot.": [("thousands-separator", "12,500", "12 500")],
         "Linnas elab 1,500,000 inimest.": [("thousands-separator", "1,500,000", "1 500 000")],
         "Linnas elab 1,500,000.": [("thousands-separator", "1,500,000", "1 500 000")],
         "Laenusumma USD1,500,000 tagastatakse.":
             [("thousands-separator", "1,500,000", "1 500 000")],
         # The decimal is converted too, and 500.50 is no issue of its own.
-        "Hind oli 1,500.50 eurot.": [("thousands-separator", "1,500.50", "1 500,50")],
+        "Hind oli 1,500.50 eurot.": [("thousands-separator", "1,500.50", "1500,50")],
+        "Hind oli 12,500.50 eurot.": [("thousands-separator", "12,500.50", "12 500,50")],
         "Kokku 1,500,000.50 eurot.":
             [("thousands-separator", "1,500,000.50", "1 500 000,50")],
     }
