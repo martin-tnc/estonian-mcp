@@ -7,6 +7,20 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The hosted service no longer answers 502 several times a day.** The
+  Fly machine had 1 GB, and once every tool had run, the server held
+  about 940 MB of it: EstNLTK itself, the named-entity model (357 MB),
+  WordNet and the paradigm tables stay loaded for the life of the
+  process. With no swap, the kernel killed it 3 to 16 times a day
+  (`oom_killed=true` in the machine's events; 16 times on 26 October)
+  whenever a request pushed it over, and every request in the 12
+  seconds the restarted server took to import got a 502 from Fly's
+  proxy. It looked like a cold start, but the
+  machine never scaled to zero; it was restarting. `fly.toml` now asks
+  for 2 GB. Self-hosters: plan for 1 GB of RAM for the server alone.
+
 ## [0.9.0] - 2026-10-22
 
 Python 3.10 is no longer supported, hence the minor version. No tool,

@@ -17,7 +17,7 @@
 # After first deploy, your MCP endpoint is:  https://<your-app>.fly.dev/mcp
 
 app = "estonian-mcp"          # change to your app name
-primary_region = "ams"        # Amsterdam — close to .ee
+primary_region = "ams"        # Amsterdam, close to .ee
 kill_signal = "SIGINT"
 kill_timeout = "5s"
 
@@ -43,9 +43,15 @@ kill_timeout = "5s"
     method = "GET"
     path = "/health"
 
+# 2gb, not 1gb. Once every tool has run, the models stay loaded and the
+# server holds about 790 MB (EstNLTK 285, the NER model 357, WordNet 59,
+# paradigm tables 78), reaching 940 MB RSS after a few 100k-character
+# calls. A 1gb machine gives the guest 962 MiB with no swap, so the kernel
+# OOM-killed the process 3 to 16 times a day in October 2026, and each
+# restart answered 502 for the 12 s the server takes to import.
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "1gb"      # bumped from 512mb to comfortably hold EstNLTK + fastText
+  memory = "2gb"
   cpus = 1
 
 # Persistent volume for /metrics counters so totals survive machine
