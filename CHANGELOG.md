@@ -7,6 +7,123 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-27
+
+New rules in five existing tools, each checked against EKI or the
+statute it cites and measured on correct Estonian before it shipped,
+and one rule narrowed because EKI accepts what it flagged. Before
+release every new rule was attacked with about 2,100 fresh, correct
+sentences across news, reports, letters, contracts, statutes, fiction,
+tables and code; the 63 false flags, wrong suggestions and slow inputs
+that turned up are fixed and pinned in the tests. Every new rule is
+precision-first: recall is low on purpose, and the style hints say so
+in their explanation.
+
+### Added
+
+- **`check_object_case` checks the government of teavitama and
+  teatama.** `teavitama` and `informeerima` take the person in the
+  partitive (keda + millest), `teatama` the recipient in the allative
+  (kellele + millest): Sõnaveeb, ÕS 2025, EKI "Valik rektsioone", and
+  RahaPTS, which uses both in one sentence (§ 49 lg 3^1).
+  `teavitama-allative-recipient` flags `Ta teavitas politseile
+  õnnetusest` and `kahtlasest tegevusest teavitamine Rahapesu
+  Andmebüroole`, with both fixes in `suggestion` (`politseid` or
+  `teatama + politseile`), each inflected in the paradigm the allative
+  belongs to (`seadmetele` → `seadmeid`, `koolidele` → `koolide`). The
+  noun head decides whether the allative is a recipient, so `Teavitame
+  kontori kolimisest teisele korrusele` stays quiet, and so do an
+  allative owned by a participle or an allative-governing noun or
+  adjective (`teavitada isikut talle seatud piirangust`, `lisatoetusest
+  peredele`), an experiencer (`meile teadaolevalt`, `kõigile
+  üllatuseks`), a post (`kandideerimine ametile`) and an allative after
+  a heading line. The prototype raised no flag on the 388 acts in force
+  in Riigi Teataja. The narrow `teatama-partitive-person` flags `Teatame
+  Teid, et ...` but not `Teatame Teid puudutavatest muudatustest`, where
+  a participle governs the pronoun. The tool is also about five times
+  faster on long texts (a 100,000-character text took 18 to 25 s).
+- **`check_punctuation` flags the comma that closes an embedded
+  clause** (EKI õigekirja põhireeglid, reegel 44).
+  `comma-after-subordinate-clause`: `Mees, kes seal seisis oli minu
+  isa.` → `, oli`; the comma belongs there at the latest, and before a
+  main-clause subject that stands right before the verb it goes there
+  (`Hommikul, kui ärkasin päike juba paistis` → `, päike`).
+  `comma-before-ja-after-subordinate-clause`: after a kes or mis clause,
+  a `ja` whose verb changes person back to the main clause's keeps the
+  clause comma (reegel 44, märkus 2): `Juhtisin projekti, mis kestis kaks
+  aastat ja koolitasin uusi töötajaid.` → `, ja`. A correct `, ja` that
+  closes a clause was never flagged and still is not. `ei ... ega`,
+  `ei tea kus`, a predicative `-vad` participle (`kes olid sobivad`),
+  English names (`Wake on LAN`), table cells, HTML tags, arrows and
+  single quotation marks do not trip it.
+- **`check_officialese`**:
+  - `läbi viima` in every form, not four surface pairs (`viis läbi
+    põhjaliku kontrolli`, `on läbi viinud`, `viis uuringu läbi` →
+    `korraldas uuringu / tegi uuringu`), and `läbiviimine`, `läbiviija`,
+    `läbiviidud`, `läbiviidav`, with `korraldama / tegema` (or `pidama`
+    for a meeting) in the same form. The physical sense is skipped:
+    routes (`Rada viib läbi metsa`), cables, pipes and threads (`Kaabel
+    tuleb läbi viia seinast`, `kaabli läbiviimine`), time spans (`päev
+    läbi viisime kaste autosse`), means (`projekti läbi viidi ellu`), the
+    numeral `viis` and the fugue term. A style hint: EKI does not
+    normalise the phrase.
+  - `kusin-tapsemalt`: a letter that opens `Küsin täpsemalt, kas ...`
+    gets `Palun täpsustage, ...` / `Sooviksin täpsemalt teada, ...`.
+    Plain `Küsin, kas ...`, a plan (`Küsin täpsemalt järgmisel
+    kohtumisel`, `..., ja võtan teiega ühendust`), a dialogue line, a
+    sentence where the person asked answers (`..., aga ta vaikib`) and a
+    question that follows a stated aim stay quiet.
+  - `calque-phrase`: translated letter formulas, each anchored on two or
+    more words: `sealhulgas, kuid mitte ainult`, `antud juhul / hetkel /
+    olukorras` (not the participle: `on antud olukorras, kus ...`),
+    `adresseerima` a problem (not a parcel), `ärge kõhelge ... võtmast`
+    (rewritten with its own verb: `Ära kõhkle küsimast` → `Küsi
+    julgelt`), `kiri leiab teid hästi`, `tänan teid teie ... eest`,
+    `vaatan edasi koostööle` (not `vaatas edasi merele`), `Palun leidke
+    manuses` (not `Palun leidke aega` or a search instruction). `Leiate
+    manusest` and `läbi e-posti` are accepted Estonian and stay quiet.
+    `tänasel / praegusel hetkel` join the officialese phrases.
+- **`check_numbers`**:
+  - `approximate-tilde`: `~50 inimest` → `u 50` (EKI Arvukirjutus p 11:
+    `u` or `ligikaudu`; the tilde marks variants such as `mina ~ ma`).
+    Code (inline, fenced or indented), paths, statistics, versions and
+    spaced variant notation are skipped.
+  - `range-spacing`: `2020 - 2024` → `2020-2024`, `5 - 10 päeva` →
+    `5-10`. Sums and expressions after `=`, scores, phone numbers, ends
+    that contain a space, ordinal and season ranges, a label with its
+    value (`ülesanne 1 - 10 punkti`) and code are skipped. The
+    suggestion keeps a plain hyphen; typeset EKI text uses the
+    mõttekriips, also unspaced.
+  - `percent-sign-suffix`: `20%-line` → `20%` or `20-protsendiline`
+    (Arvukirjutus p 30); case endings (`10%-st`) and nouns such as
+    `10%-lisatasu` are fine.
+
+### Changed
+
+- **`check_abbreviation_hyphenation` flags only an ending that starts
+  with l.** It flagged every hyphenless case ending on an all-capital
+  abbreviation (`ELi` → `EL-i`, `APIga`, `MCPst`). The EKI teatmik
+  ("Lühendite ja tähiste käänamine") accepts both forms (`OÜ-sid ehk
+  OÜsid`) and prefers the hyphen only before an ending that starts with
+  l (`THI-l, mitte THIl`). `OÜle` → `OÜ-le` and `ÜROlt` → `ÜRO-lt` are
+  still flagged; `ELi`, `APIga` and `ASile` are not. A letter whose name
+  ends in a consonant gets the stem vowel (`ASle` → `AS-ile`, `SMSl` →
+  `SMS-il`), a Roman ordinal before its noun loses the ending (`XIIl
+  sajandil` → `XII sajandil`), and chloride formulas (`HCl`, `NH4Cl`)
+  are not abbreviations.
+- **`check_officialese` gives a real verb for a -mine noun.** It cut
+  `-mine` and added `-ma`, which invented `riskihindama`, `läbivaatama`
+  and `heakskiitma`. A particle verb is now written apart
+  (`läbivaatamine` → `läbi vaatama`, EKI reegel 31), a noun + verb
+  compound gets its head verb (`riskihindamine` → `hindama`,
+  `sisuloomine` → `looma`), and the `verb` key is left out rather than
+  invented. Lexicalised nouns (`pakkumine`, `teadmised`, `kohtumine`)
+  and `-misi` adverbs (`vaikimisi`) are no longer counted as
+  nominalisations. `metrics.nominalisations` and
+  `nominalisations_per_100_words` change accordingly.
+- **`check_officialese` suggests `korraldati / tehti` for `viidi läbi`**,
+  in the verb's own form; it gave `tehti / korraldati`.
+
 ### Fixed
 
 - **The hosted service no longer answers 502 several times a day.** The
@@ -20,6 +137,23 @@ versions follow [Semantic Versioning](https://semver.org/).
   proxy. It looked like a cold start, but the
   machine never scaled to zero; it was restarting. `fly.toml` now asks
   for 2 GB. Self-hosters: plan for 1 GB of RAM for the server alone.
+- **`check_numbers` called a month and year a decimal.** `09.2016` was
+  flagged as `decimal-separator` with the suggestion `09,2016`. It is a
+  date: a two-digit month now gets `month-year-digits` with the month
+  in words (`sept 2016`), which EKI finds clearer (Arvukirjutus p 33).
+  A one-digit month, which may be a rate, is left alone, and so is 10 to
+  12 after a rate word or a currency pair (`kurss oli 11.2050` keeps the
+  decimal suggestion). A unit, currency or math sign next to it still
+  makes it a decimal.
+- **`check_punctuation` asked for a comma before `et` after `ja`**
+  (`..., et see on õige ja et me peaksime jätkama`), which joins two
+  et-clauses and takes none (reegel 45), and before a verbless `nagu`
+  comparison closed by a comma (`Laps, kes jooksis nagu tuul, võitis`).
+- **`check_officialese` flagged `Lapsed viidi läbi metsa koju`**, a
+  route, as kantseliit.
+- **`check_officialese` reported a two-word `phrase` that was not the
+  text at `position`** when a line break or two spaces stood between the
+  words; `phrase` is now the exact slice.
 
 ## [0.9.0] - 2026-10-22
 

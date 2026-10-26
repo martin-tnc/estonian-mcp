@@ -82,6 +82,12 @@ jobs:
       - name: Run check_numbers context tests
         run: uv run --python ${{ matrix.python-version }} python tests/test_numbers.py
 
+      # check_object_case's government rules: teavitama keda (not kellele),
+      # teatama kellele (not keda), against the research set and the
+      # statute traps, plus a linear-time check on 100,000 characters.
+      - name: Run object-case government tests
+        run: uv run --python ${{ matrix.python-version }} python tests/test_object_case.py
+
       # check_punctuation against the EKI comma rules for two-part
       # connectives (nii et, ilma et, selleks et) and nagu comparisons.
       - name: Run punctuation tests

@@ -336,6 +336,225 @@ def still_flagged() -> None:
     ], str(got))
 
 
+def tildes(text: str) -> list[tuple[str, str]]:
+    return [(t, sug) for rule, t, sug in found(text) if rule == "approximate-tilde"]
+
+
+def approximate_tilde() -> None:
+    print("approximate-tilde: ~ meaning about before a number (EKI Arvukirjutus p 11)")
+    nbsp = chr(0xA0)
+    cases = {
+        "Meeskonnas on ~50 inimest.": [("~50", "u 50")],
+        "Laulupeol esines ~40-liikmeline koor.": [("~40", "u 40")],
+        "Kestus: ~ 5 km.": [("~ 5", "u 5")],
+        "Matk on pikk (~5 km) ja kerge.": [("~5", "u 5")],
+        "~200 inimest registreerus esimesel päeval.": [("~200", "Umbes 200")],
+        "- ~15 osalejat igas rühmas": [("~15", "Umbes 15")],
+        "Eelarve: ~12 000 eurot.": [("~12 000", "u 12 000")],
+        "Ootame ~40 kuni ~60 külalist.": [("~40", "u 40"), ("~60", "u 60")],
+        "| Osalejaid | ~120 |": [("~120", "u 120")],
+        "Vahemaa on ~1,5 km.": [("~1,5", "u 1,5")],
+        "Pilet maksab 5000 franki, ~ 120 krooni.": [("~ 120", "u 120")],
+        "Osalejad\n\n~ 40 inimest": [("~ 40", "Umbes 40")],
+        "Ootame ~50% rohkem külastajaid.": [("~50", "u 50")],
+        f"Hind: ~{nbsp}50 eurot": [(f"~{nbsp}50", "u 50")],
+        # A * or + opening a line is a bullet like -, not an operator.
+        "* ~10 minutit jalutuskäiku kesklinnast": [("~10", "Umbes 10")],
+        "+ ~10 minutit jalutuskäiku kesklinnast": [("~10", "Umbes 10")],
+        # An indented block is code only after a blank line or the text
+        # start and outside a list, so prose around it is still read.
+        "    ls ~1\n    git log HEAD~2\nTavatekst ~3 korda.": [("~3", "u 3")],
+        "Seletus.\n    jätkub ~5 korda.": [("~5", "u 5")],
+        "- Hotell:\n\n    - ~10 minutit": [("~10", "Umbes 10")],
+        "Kasuta ``foo`` ja ~5 minutit.": [("~5", "u 5")],
+    }
+    for text, want in cases.items():
+        got = tildes(text)
+        check(f"flags {want}: {text!r}", got == want, f"got {got}")
+    # EKI writes the tilde between parallel variants, always spaced
+    # (mina ~ ma, 2005 ~ 2005. a), so a spaced tilde after a word is left
+    # alone. Code, paths, statistics, versions and ranges are not prose.
+    for text in [
+        "Meeskonnas on u 50 inimest ja ca 30 vabatahtlikku.", "Ruumis oli u. 50 inimest.",
+        "Failid on kaustas ~/docs ja ~/Downloads.", "Hind oli ~~50 eurot~~ ja nüüd 40.",
+        "Hind oli ~50 eurot~ ja nüüd 40 eurot.", "Mudelis eeldame, et x ~ N(0,1).",
+        "Tulemus oli oluline (p ~ 0,05).", "Valemis a ~ 2b on seos lineaarne.",
+        "Kood: `x = ~5` annab -6.", "Käsk `git reset HEAD~1` tühistab kande.",
+        "```\nx = ~5\ny = ~ 3\n```", "~~~\nls ~1\n~~~", "Nõue on Python ~3.11 või uuem.",
+        'Kasuta sõltuvust "lodash": "~4.17.21".', "Vahemik 5~10 on sobiv.",
+        "Vahemik 5 ~10 on sobiv.", "Temperatuur oli 20 ~ 25 kraadi.",
+        "Aadress on https://example.org/~50/leht.", "Fail PROGRA~1 asub juurkaustas.",
+        "Vesi on H~2~O.", "Kirjutatakse 25aastane ~ 25-aastane.",
+        "Aastal 2005 ~ 2005. aastal ~ 2005. a toimus üritus.",
+        "Kirjutatakse 1974. aastal\n~ 1974. a ja nii edasi.", "Rööpvormid on mina ~ ma.",
+        "Arvutus π ≈ 3,14 on piisav.", "Osalejaid oli ≈50.", "Kurss: 1 € = ~10 ühikut.",
+        "Tulemus 50~ oli ootamatu.", "Arv 5 * ~10 on suur.",
+        # A double-backtick span and an indented code block are code too.
+        "`` ~5 `` on koodis.", "Kood: `` x = ~5 `` ja `` ~7 ``.",
+        "Seletus.\n\n    print(~5)", "\tls ~1",
+    ]:
+        got = tildes(text)
+        check(f"no tilde flag: {text!r}", got == [], str(got))
+    # A comma or period part after the number belongs to the separator
+    # rules, so one number never carries two issues.
+    check("~1,250 is a thousands issue only",
+          found("Linnas elab ~1,250 inimest.") == [("thousands-separator", "1,250", "1250")],
+          str(found("Linnas elab ~1,250 inimest.")))
+    check("~1.5 is a decimal issue only",
+          found("Kestus ~1.5 tundi.") == [("decimal-separator", "1.5", "1,5")],
+          str(found("Kestus ~1.5 tundi.")))
+
+
+def expect_found(cases: dict[str, list[tuple[str, str, str]]]) -> None:
+    for text, want in cases.items():
+        got = found(text)
+        check(f"finds {want}: {text!r}", got == want, f"got {got}")
+
+
+def month_year() -> None:
+    print("month-year-digits: a month and year in digits is a date (EKI Arvukirjutus p 33)")
+    expect_found({
+        "Tööde lõpp on 09.2016.": [("month-year-digits", "09.2016", "sept 2016")],
+        "Tähtaeg on 11.2027.": [("month-year-digits", "11.2027", "nov 2027")],
+        "| 03.2011 | 07.2013 |": [("month-year-digits", "03.2011", "märts 2011"),
+                                  ("month-year-digits", "07.2013", "juuli 2013")],
+        # Both ends get the hint and the range is left alone: in words EKI
+        # spaces the dash (aprill 2008 - august 2009).
+        "04.2008 - 08.2009 raamatupidaja": [("month-year-digits", "04.2008", "apr 2008"),
+                                           ("month-year-digits", "08.2009", "aug 2009")],
+        "10.2017 - praeguseni": [("month-year-digits", "10.2017", "okt 2017")],
+        # A unit, currency or math sign makes it a number again.
+        "Kaugus oli 11.2027 m.": [("decimal-separator", "11.2027", "11,2027")],
+        "Hind 1.2019 eurot": [("decimal-separator", "1.2019", "1,2019")],
+        "Tulemus oli t = 2.1987 ja p alla 0,05.": [("decimal-separator", "2.1987", "2,1987")],
+        "Mõõtsime 1.1950 - 1.2050 m.": [("decimal-separator", "1.1950", "1,1950"),
+                                        ("decimal-separator", "1.2050", "1,2050")],
+        # 10 to 12 has no leading zero to mark a month: a rate word or a
+        # currency pair earlier in the clause makes it a decimal.
+        "Valuutakurss EUR/SEK oli eile 11.2050.": [("decimal-separator", "11.2050", "11,2050")],
+        "USD/SEK kurss kerkis 10.1985 tasemele.": [("decimal-separator", "10.1985", "10,1985")],
+        "Rootsi krooni kurss oli 11.2050.": [("decimal-separator", "11.2050", "11,2050")],
+        "Valuutakurss: 11.2050": [("decimal-separator", "11.2050", "11,2050")],
+        "Koefitsiendid olid 0.2019, 10.2019 ja 11.1998.": [
+            ("decimal-separator", "0.2019", "0,2019"), ("decimal-separator", "10.2019", "10,2019"),
+            ("decimal-separator", "11.1998", "11,1998")],
+        "Pikkuskraad 10.2041 ja laiuskraad 59.4370.": [
+            ("decimal-separator", "10.2041", "10,2041"), ("decimal-separator", "59.4370", "59,4370")],
+        "Kaalutud keskmine oli 10.2015 ja mediaan 9.8.": [
+            ("decimal-separator", "10.2015", "10,2015"), ("decimal-separator", "9.8", "9,8")],
+        # A date word next to it, a zero-padded month or no rate word keeps
+        # the date; the clause ends at a sentence end.
+        "Keskmine palk seisuga 10.2023 oli 1800 eurot.": [
+            ("month-year-digits", "10.2023", "okt 2023")],
+        "Kurss oli 09.2016.": [("month-year-digits", "09.2016", "sept 2016")],
+        "Kursus algab 10.2027.": [("month-year-digits", "10.2027", "okt 2027")],
+        "Keskmine hinne oli 3.67. Kursus algab 10.2027.": [
+            ("decimal-separator", "3.67", "3,67"), ("month-year-digits", "10.2027", "okt 2027")],
+    })
+    # A one-digit month may be an exchange rate (1.2050): neither a decimal
+    # nor a date is claimed. In code it is program output.
+    expect_clean(["Töötasin ettevõttes alates 9.2019 kuni praeguseni.",
+                  "Periood 1.2019 kuni 3.2020.",
+                  "Kasuta `date +%m.%Y`, mis annab näiteks `04.2017`.", "```\n04.2017\n```"])
+
+
+def range_spacing() -> None:
+    print("range-spacing: no spaces around a range dash between plain numbers")
+    expect_found({
+        "Töötasin seal aastatel 2020 - 2024.": [("range-spacing", "2020 - 2024", "2020-2024")],
+        "2015 - 2019 projektijuht, arendusosakond": [("range-spacing", "2015 - 2019", "2015-2019")],
+        "Laat toimub 3.06.2027 - 5.06.2027 Pärnus.": [
+            ("range-spacing", "3.06.2027 - 5.06.2027", "3.06.2027-5.06.2027")],
+        "Ravi kestab 5 - 10 päeva.": [("range-spacing", "5 - 10", "5-10")],
+        "Ootame 10 - 15 inimest.": [("range-spacing", "10 - 15", "10-15")],
+        "Kursus kestab 3 - 4 kuud.": [("range-spacing", "3 - 4", "3-4")],
+        "Vt lk 5 - 9.": [("range-spacing", "5 - 9", "5-9")],
+        "Sätestatud §-des 5 - 8.": [("range-spacing", "5 - 8", "5-8")],
+        "Vastuvõtt on 10.00 - 12.00 ruumis 101.": [("range-spacing", "10.00 - 12.00", "10.00-12.00")],
+        "Kauplus on lahti kell 9 - 17.": [("range-spacing", "9 - 17", "9-17")],
+        "Kursus on mõeldud 18 - 25-aastastele.": [("range-spacing", "18 - 25", "18-25")],
+        "Hinnatõus oli 5 - 10%.": [("range-spacing", "5 - 10", "5-10")],
+        "Kaal on 1,5 - 2,5 kg.": [("range-spacing", "1,5 - 2,5", "1,5-2,5")],
+        "Kantselei on suletud 24.12 - 27.12.": [("range-spacing", "24.12 - 27.12", "24.12-27.12")],
+        "Projekt kestis 2018- 2021 ja lõppes edukalt.": [("range-spacing", "2018- 2021", "2018-2021")],
+        "| 2020 - 2024 | juhataja |": [("range-spacing", "2020 - 2024", "2020-2024")],
+        # A plural label, a cue with nothing after it and a quantity noun
+        # are no label and value.
+        "Lahenda ülesanded 1 - 5 punkti kaupa.": [("range-spacing", "1 - 5", "1-5")],
+        "Loe peatükk 3 - 5.": [("range-spacing", "3 - 5", "3-5")],
+        "Hind 10 - 15 eurot.": [("range-spacing", "10 - 15", "10-15")],
+        "Pakett 1,5 - 2,5 kg.": [("range-spacing", "1,5 - 2,5", "1,5-2,5")],
+        # A comitative after a range is no score, and a broad score word
+        # (tulemus) counts only among the last three words.
+        "Indeks tõusis 1,5 - 2,5 punktiga.": [("range-spacing", "1,5 - 2,5", "1,5-2,5")],
+        "Uuringu tulemuste põhjal kestab ravi 5 - 10 päeva.": [("range-spacing", "5 - 10", "5-10")],
+        "Teises geimis jäi Eesti taha 18 - 25 punktiga, aga ravi kestab 5 - 10 päeva.": [
+            ("range-spacing", "5 - 10", "5-10")],
+        # Prose around code is still read.
+        "```\nkood\n```\nTöötasin seal aastatel 2020 - 2024.": [
+            ("range-spacing", "2020 - 2024", "2020-2024")],
+        "Kood `x` ja aastatel 2020 - 2024 töötasin.": [("range-spacing", "2020 - 2024", "2020-2024")],
+    })
+    # Not ranges, ranges EKI writes otherwise, or ends that contain a space.
+    expect_clean([
+        "Aastad 2020-2024 olid head.", "10 - 5 = 5", "Ajavahe: 13 - 3 + 9 = 19",
+        "Arvuta 12 - 4 ja kirjuta vastus.", "Seis oli 3 - 1.", "Mäng lõppes 1 - 3 külaliste kasuks.",
+        "Seis on 1 - 3 kodumeeskonna kahjuks.", "Kodumeeskond - külalised 1 - 3 (0 - 2)",
+        "Temperatuur langes -5 - -10 kraadini.", "Tel +372 5555 - 1234",
+        "Helista 5123 - 4567, kui tekib küsimusi.", "Kontakt: 5123 - 6789", "- 2020 aruanne valmis",
+        "1. - 3. koht jäi meie võistkonnale.", "Eelarve on 9000 - 10 000 eurot.",
+        "Palk 1 500 - 2 000 eurot.", "Ta elas 14. XI 1920 - 21. XII 2005 Tartus.",
+        "Leping kehtis 2015 - 2019. aastal.", "Õppeaasta 2025 - 2026 algab septembris.",
+        "Hooaeg 2019 - 2020 oli edukas.", "Aastad 1990 - 2000 - 2010 näitasid kasvu.",
+        "Tulemused: 10,55 - 7,49 - 13,98", "Näitus on lahti 5 - 10 mai.", "Ta töötas 5 - 10 märtsi.",
+        "Ajakirja nr 8 - 2009 artikkel", "Metsa tn 87 - 26", "Fail aruanne 2019 - 2020.pptx on kaustas.",
+        "Viik 2 - 2.", f"Aastad 2020 {EN_DASH} 2024 olid head.",
+        # A singular label noun, its number and a value with a unit or noun:
+        # the hyphen stands for a spaced mõttekriips, not "to".
+        "Hindamine: ülesanne 1 - 10 punkti, ülesanne 2 - 15 punkti, ülesanne 3 - 25 punkti.",
+        "Hinnakiri: pakett 1 - 25 eurot, pakett 2 - 40 eurot.",
+        "Hinnakiri\nVariant 1 - 30 €\nVariant 2 - 45 €", "Rühm 1 - 12 last, rühm 2 - 15 last.",
+        "Klass 1 - 24 õpilast, klass 2 - 26 õpilast.", "Tuba 1 - 2 voodit, tuba 2 - 3 voodit.",
+        "Ruum 1 - 10 kohta, ruum 2 - 20 kohta.",
+        "Joonis 2 - 3 peamist põhjust, miks töötajad lahkuvad",
+        "Osa 2 - 10 nõuannet algajale aednikule",
+        "Episood 4 - 7 harjumust, mis muudavad päeva paremaks",
+        "Peatükk 3 - 5 sammu eduka projekti poole",
+        # A sports word anywhere in the clause makes a score.
+        "Teises geimis jäi Eesti taha 18 - 25 punktiga.",
+        "Eesti kaotas geimid 20 - 25 ja 23 - 25 punktiga.",
+        # Code, and an expression after =.
+        "Arvuta `2020 - 2024` ja vaata tulemust.",
+        "```\nSELECT * FROM t WHERE aasta BETWEEN 2019 - 2021;\n```",
+        "```js\nconst diff = end - start; // 2020 - 2024\n```",
+        "```python\nvanus = 18 - 25 aastat\n```",
+        "Valem: vanus = 1990 - 2024, märk on vale.",
+    ])
+
+
+def percent_suffix() -> None:
+    print("percent-sign-suffix: no derivational suffix on % (EKI Arvukirjutus p 30)")
+    expect_found({
+        "Pood pakkus 20%-list hinnaalandust ja ootab 100%-list kasvu.": [
+            ("percent-sign-suffix", "20%-list", "20% / 20-protsendilist"),
+            ("percent-sign-suffix", "100%-list", "100% / 100-protsendilist")],
+        "Laen 5%-se intressiga.": [("percent-sign-suffix", "5%-se", "5% / 5-protsendise")],
+        "Piim 3,5%-lise rasvasisaldusega.": [
+            ("percent-sign-suffix", "3,5%-lise", "3,5% / 3,5-protsendilise")],
+        # The suffix, not the noun after it.
+        "Makstakse 10%-list lisatasu.": [
+            ("percent-sign-suffix", "10%-list", "10% / 10-protsendilist")],
+        # A comma glued before the number does not hide it.
+        "Valikus on tooted,20%-lised soodustused.": [
+            ("percent-sign-suffix", "20%-lised", "20% / 20-protsendilised")],
+    })
+    # Case endings on % are fine; so are the two forms EKI pairs. No form
+    # of -line starts with lisa: lisa and lisatasu are nouns.
+    expect_clean(["Kasv oli 10%-st 15%-ni ja langus 3%-le.", "Hind tõusis 5%.",
+                  "20-protsendiline hinnaalandus ja 20% hinnaalandus.",
+                  "5%-lisa töötasule makstakse ööajal.", "Ööajal makstakse 10%-lisatasu."])
+
+
 def issue_shape() -> None:
     print("issue shape")
     r = server.check_numbers("Hind 3.67 ja 1,500,000.50 eurot.")
@@ -353,7 +572,15 @@ def linear_time() -> None:
     print("linear time on 100,000 characters")
     texts = {f"{unit!r} repeated": (unit * (100_000 // len(unit) + 1))[:100_000]
              for unit in ("1.5-", f"3.7 {EN_DASH} ", "10.20-", "ja Xyz 1.5 ",
-                          "4.13. Tellija\n", "kell 10.20-12.30 ", "€14.05 ")}
+                          "4.13. Tellija\n", "kell 10.20-12.30 ", "€14.05 ",
+                          "~5 ", "`~5 ", "~5~ ", "```\n~5\n",
+                          "5 - 10 päeva ", "2020 - 2024 ", "09.2016 ", "20%-line ",
+                          "* ~5\n", "    ~5\n", "`` ~5 `` ", "` `` ``` ", "Kurss 11.2050 ",
+                          "ülesanne 1 - 10 punkti ", "geimis 18 - 25 punktiga ",
+                          "= 1990 - 2024 ", "`2020 - 2024` ")}
+    # A match tried inside a digit run must not rescan the rest of it.
+    texts["one 100k digit run"] = "1" * 100_000
+    texts["pi to 100k digits"] = ("3," + "1415926535" * 10_000)[:100_000]
     # Each new capitalised word costs a lexicon lookup, up to 2 ms for a
     # long compound, so a text gets _NUM_LOOKUPS of them.
     roots = ["maja", "kooli", "aia", "puu", "kivi", "vee", "tee", "linna", "metsa", "auto",
@@ -397,6 +624,10 @@ comma_tails()
 units()
 sentence_ends()
 still_flagged()
+approximate_tilde()
+month_year()
+range_spacing()
+percent_suffix()
 issue_shape()
 linear_time()
 

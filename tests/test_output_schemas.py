@@ -90,7 +90,7 @@ CALLS: list[tuple[str, dict]] = [
     ("check_numbers", {"text": "Pi on 3.14."}),
     ("check_redundancy", {"text": "Samuti ka."}),
     ("check_object_case", {"text": "Ma ei näen koera."}),
-    ("check_abbreviation_hyphenation", {"text": "MCPst tuleb abi."}),
+    ("check_abbreviation_hyphenation", {"text": "OÜle tuleb abi."}),
     ("check_compound_familiarity", {"text": "See on mõtteliin."}),
     ("check_domain_terms", {"text": "See on mõtteliin."}),
     ("check_domain_terms", {"text": "Vagunisõit ja vagunireisitabel.",

@@ -34,17 +34,17 @@ The hard rule, applied throughout this skill:
 | `classify_register` | Heuristic formal/colloquial score with markers + `consistency.is_mixed` flag for register-mixed text (formal + colloquial markers in the same draft = jarring). |
 | `check_style` | Four style metrics in one call: lemma-aware repetition (catches 'kasutab' / 'kasutas' both under lemma 'kasutama'), Estonian passive-voice ratio (-takse/-ti/-tud family), sentence-length mean+stddev, hedging-word density. Use for newsletter / ad / email polish. |
 | `check_redundancy` | Pleonasm / semantic-doubling check: flags `samuti ka` (also+also), `kõige optimaalsem` (most+optimal), and fixed redundant phrases. Run it before claiming a redundancy "the MCP can't catch": it catches the common ones. |
-| `check_object_case` | Käändeõpetus heuristic. Catches the most common confidently-wrong Estonian: direct-object case after negation (must be partitive) and after partitive-only verbs (`armastama`, `vihkama`, `vajama`, …). Lexicon-based, no syntactic parser; only flags nouns AFTER the trigger so subject-noun false positives are minimal. An issue gives the noun's `lemma` and `form`, not a correction: take the partitive in the number `form` shows from `paradigm`. A negated sentence containing `olema` (`pole näinud`) is not checked for negation. |
-| `check_abbreviation_hyphenation` | Lühendiortograafia: flags abbreviations carrying a case ending without the EKI-mandated hyphen (`MCPst` → `MCP-st`, `OÜle` → `OÜ-le`, `APIga` → `API-ga`). Any all-capital stem is checked, known or not; a mixed-case one (`SaaSi`, `PhDga`) is not, and an English plural (`APIs`) can be flagged as a case ending. |
+| `check_object_case` | Käändeõpetus heuristic. Catches the most common confidently-wrong Estonian: direct-object case after negation (must be partitive) and after partitive-only verbs (`armastama`, `vihkama`, `vajama`, …). Lexicon-based, no syntactic parser; only flags nouns AFTER the trigger so subject-noun false positives are minimal. An issue gives the noun's `lemma` and `form`, not a correction: take the partitive in the number `form` shows from `paradigm`. A negated sentence containing `olema` (`pole näinud`) is not checked for negation. It also checks verb government: `teavitama` / `informeerima` take the person in the partitive (`teavitas politseid`), `teatama` takes the recipient in the allative (`teatas politseile`), so `teavitas politseile` and `Teatame Teid` are flagged with both fixes in `suggestion`. Recall is about half by design: an allative that belongs to a participle (`teavitada isikut talle seatud piirangust`) is correct and stays quiet. |
+| `check_abbreviation_hyphenation` | Lühendiortograafia: flags an ending that starts with l written straight onto an all-capital abbreviation (`OÜle` → `OÜ-le`, `ÜROlt` → `ÜRO-lt`, `THIl` → `THI-l`), where EKI finds the hyphen clearer. EKI accepts every other hyphenless form (`ELi`, `ELis`, `APIga`, `MCPst`, `ASidel` are as correct as `EL-i`, `EL-is`, `API-ga`, `MCP-st`, `AS-idel`), so do not "fix" them: keep the text's own choice. A letter whose name ends in a consonant takes the stem vowel, so `ASle` is misinflected and the suggestion is `AS-ile`. Any all-capital stem is checked, known or not; a mixed-case one (`SaaSi`, `PhDga`) and a chloride formula (`HCl`, `NH4Cl`) are not. |
 | `check_compound_familiarity` | Attestation check for each compound noun: is the lemma in the fastText corpus vocabulary (`in_vocab`), in Estonian WordNet (`in_wordnet`), or a legal term of art? **Read `attested` first, and read `attested: false` for what it is**: outside a 100K-word vocabulary, which is the normal state for correct specialist vocabulary. `lisakäive`, `klikkimismäär`, `koolitoit`, `rehvivahetus` are all unattested here and all ordinary Estonian, so unattested is NEVER on its own a reason to rewrite. `is_suspect` is narrow: unattested AND the nearest neighbour is a real word AND that similarity is still under 0.55 (`mõtteliin`, 0.536). Recall is low on purpose: a coinage scoring inside the band real vocabulary occupies is missed rather than bought at the price of flagging good Estonian, so `toortõlkeoht` (0.571) passes. `neighbour_quality.signal: none` means the nearest neighbour is a scrape-artifact token, the score means nothing, and no verdict is offered. Note the other limit too: a compound that is merely *stilted* rather than invented (`teadusandmestik`) passes, because similarity can't judge register, so use `check_officialese` for that. Run on any Estonian compound you yourself produced (rather than verbatim user input). |
 | `check_domain_terms` | For Estonian written about an organisation's own systems. Reports the compounds that are unattested AND not on the organisation's glossary or identifier list. That says only that the word is not the organisation's: it may be a name you coined, or ordinary Estonian the lexicons lack (`vagunisõit` is common). Where it names something the organisation has a word for, or something with an identifier, use theirs. When there are glossary terms, each comes with up to three of them **spelled alike** (`suggestions`): look-alikes, not synonyms, so replace the compound only when a suggestion names the same thing. `contains_glossary_term` marks a compound built on a glossary term (`vagunireisitabel` on `vagunireis`), which is ordinary Estonian and must not be shortened to the term. The hosted server has no glossary of its own, so pass the organisation's terms in `glossary` (up to 1,000). With no glossary at all it is only the unattested list, which is never on its own a reason to rewrite. |
-| `check_officialese` | Kantseliit check for **non-legal** prose: reports, academic writing, business copy, grant/R&D paperwork. Use this, not `check_legalese`, for anything that isn't a statute or contract: `check_legalese`'s lexicon and 34-word gate are tuned for legislation and return nothing on report officialese. Gives nominalisation density with the verb to swap in (`hindamine` → `hindama`), correctly-counted umbisikuline tegumood, clause stacking, Estonian-calibrated sentence length, and admin filler. |
+| `check_officialese` | Kantseliit check for **non-legal** prose: reports, academic writing, business copy, grant/R&D paperwork. Use this, not `check_legalese`, for anything that isn't a statute or contract: `check_legalese`'s lexicon and 34-word gate are tuned for legislation and return nothing on report officialese. Gives nominalisation density with the verb to swap in (`hindamine` → `hindama`), correctly-counted umbisikuline tegumood, clause stacking, Estonian-calibrated sentence length, and admin filler. Also `läbi viima` in every form with a verb in the same form (`viidi läbi` → `korraldati / tehti`, `pidama` for a meeting), translated letter phrases (`calque-phrase`: `Palun leidke manuses`, `ärge kõhelge ... võtmast`, `kiri leiab teid hästi`, `tänan teid teie ... eest`, `vaatan edasi koostööle`, `sealhulgas, kuid mitte ainult`, `antud juhul`) and the request `Küsin täpsemalt, kas …` (`kusin-tapsemalt` → `Palun täpsustage, …` / `Sooviksin täpsemalt teada, …`). All of these are style hints: say so when you pass them on. |
 | `check_term_consistency` | One referent, one term. Run on any document longer than a couple of paragraphs: catches `andmestik` in §1, `teadusandmestik` in §2, `pildiandmestik` in §3. Reports per-variant counts so you can standardise on the dominant one. Pass the organisation's terms in `glossary` when you have them (up to 1,000; the hosted server has none of its own): when exactly one variant in a group is listed, the group names it `preferred`, so standardise on `preferred` when present and otherwise on `dominant`. Read each group before rewriting: some are genuinely distinct concepts. |
 | `check_capitalization` | Algustäheortograafia (initial-letter orthography) check per EKI Reeglid. Flags weekdays, months, nationalities, and language/culture adjectives wrongly capitalized mid-sentence. A hit at the start of a line, list item or quotation, or inside a proper name (`Eesti Keele Instituut`), is usually false. Run on every Estonian text you produce. |
 | `check_compounds` | Liitsõnaõigekiri: flags common compound splits the model produces (`kooli maja` → `koolimaja`). Lexicon-based, phase 1. |
-| `check_punctuation` | Kirjavahemärgid: flags missing commas before subordinating conjunctions (et, sest, kuna, kuid, vaid, nagu, …). The comma-before-clause rule only. A comma before a two-part connective (`nii et`, `selleks et`) passes. With none, `ilma et` and `olgugi et` get it before the pair; the others get it before `et`, which suits manner (`Tegin nii, et kõik said aru`) but not result (`Sadas vihma, nii et jäime koju`). `nagu` is flagged only before a verb, so `tugev nagu karu` passes, but `Kassid nagu kõik koduloomad vajavad hoolitsust` and `punane nagu tuli` still flag, and `nagu` meaning näiteks (`Riigid, nagu Soome ja Rootsi, ...`) is never flagged: give those a second look. |
+| `check_punctuation` | Kirjavahemärgid: flags missing commas before subordinating conjunctions (et, sest, kuna, kuid, vaid, nagu, …). The comma-before-clause rule only. A comma before a two-part connective (`nii et`, `selleks et`) passes. With none, `ilma et` and `olgugi et` get it before the pair; the others get it before `et`, which suits manner (`Tegin nii, et kõik said aru`) but not result (`Sadas vihma, nii et jäime koju`). `nagu` is flagged only before a verb, so `tugev nagu karu` passes, but `Kassid nagu kõik koduloomad vajavad hoolitsust` and `punane nagu tuli` still flag, and `nagu` meaning näiteks (`Riigid, nagu Soome ja Rootsi, ...`) is never flagged: give those a second look. `comma-after-subordinate-clause` flags the comma that closes an embedded clause before the main verb (`Mees, kes seal seisis oli minu isa` → `, oli`); the comma belongs there at the latest and may belong earlier. `comma-before-ja-after-subordinate-clause` flags `ja` after a kes/mis clause when the verb after `ja` changes person back to the main clause's (`Juhtisin projekti, mis kestis kaks aastat ja koolitasin …` → `, ja`). EKI keeps that comma (reegel 44, märkus 2), so never delete a comma before `ja` that closes a clause. |
 | `check_hyphenation` | Poolitamine: returns line-break positions for a word; compound seams are among them but not singled out, so pick the seam yourself. Use only when typesetting/line-breaking matters; skip in normal writing. |
-| `check_numbers` | Numbrite õigekirjutus: flags decimal-separator (period vs comma) and thousands-separator (comma vs space) violations. It skips times after `kell`, time ranges, dates (`14.05`), clause, section and version numbers (`4.13. Tellija`, `punkt 3.2`, `Python 3.12`). It flags `1,250` as a thousands separator with the suggestion `1250` (EKI writes four digits together and groups from five: `12 500`); if you meant the decimal 1,25, keep it. A time without `kell` mid-sentence (`väljub 8.47 ja`) is still flagged, and a date-shaped decimal with no unit (`1.05 ja`) is skipped, so judge a hit or a miss next to a time or a date yourself. |
+| `check_numbers` | Numbrite õigekirjutus: flags decimal-separator (period vs comma) and thousands-separator (comma vs space) violations. It skips times after `kell`, time ranges, dates (`14.05`), clause, section and version numbers (`4.13. Tellija`, `punkt 3.2`, `Python 3.12`). It flags `1,250` as a thousands separator with the suggestion `1250` (EKI writes four digits together and groups from five: `12 500`); if you meant the decimal 1,25, keep it. A time without `kell` mid-sentence (`väljub 8.47 ja`) is still flagged, and a date-shaped decimal with no unit (`1.05 ja`) is skipped, so judge a hit or a miss next to a time or a date yourself. `approximate-tilde`: a tilde used as "about" before a number (`~50 inimest`) gets `u 50`, or `Umbes 50` at a sentence start; EKI writes rounded numbers with `u` (no period), `umbes` or `ligikaudu` and keeps the tilde for variants (`mina ~ ma`). `ca 50` and `u. 50` are fine; leave them. A spaced `A ~ 5` after a word, `≈`, code, paths and `5~10` are not flagged. `month-year-digits`: a month and year in digits (`09.2016`) is a date, and EKI finds the month in words clearer: `sept 2016` (the abbreviation needs no case ending: `alates sept 2016`; a full name does: `alates märtsist 2019`). `range-spacing`: no spaces around the dash of a range whose ends contain none (`2020 - 2024` → `2020-2024`, `5 - 10 päeva` → `5-10`); typeset EKI text uses the mõttekriips there, and a hyphen strictly means "ja" between consecutive numbers (`14-15 eurot`). Keep the spaces when an end contains one (`9000 - 10 000`, `aprill 2008 - august 2009`); write ordinal ranges as `2015.-2019. aastal` and seasons as `2019/2020`. `percent-sign-suffix`: `20%-line` → `20%` or `20-protsendiline`; case endings (`10%-st`) are fine. |
 | `named_entities` | PER/LOC/ORG extraction. Useful for summarisation and content audit. |
 | `syllabify` | Per-syllable breakdown with quantity + accent. Useful for slogan rhythm, song lyrics, or pronunciation guides. |
 
@@ -180,7 +180,12 @@ A word can pass `spell_check`, be a valid compound, and still be wrong.
    stay.
 3. For register fit, call `classify_register` or `check_officialese`.
 4. When the user is a native speaker and corrects your Estonian, they
-   are right. Take the correction and move on.
+   are right about how it reads: naturalness, register, word order,
+   what sounds translated. Take the correction and move on. The one
+   exception is a term of art a statute fixes, or a rule EKI states in
+   so many words (see "Rules intuition gets wrong" below). When a
+   correction would change one of those, quote the section or page and
+   let them choose.
 
 ### 3. Break repetition in long-form copy
 
@@ -318,6 +323,116 @@ mistranslation is `formalne` (wrong) instead of `formaalne`
 
 It's strictly per-word. If the user wants syllabification of a
 sentence, split first via `tokenize` and call `syllabify` per word.
+
+## Rules intuition gets wrong
+
+Each of these is correct Estonian that a fluent writer or editor can
+"fix" into an error, or an error that reads fine. Cite the source when
+you apply one.
+
+### Terms of art: check the statute
+
+A word can be correct Estonian and still be the wrong term. In anti-money
+laundering, payments, legal or deal text:
+
+- **teavitama vs teatama.** `teavitama` (and `informeerima`) takes the
+  person in the partitive: *keda + millest* (`teavitas politseid
+  õnnetusest`, `Teavitame Teid muudatustest`). `teatama` takes the
+  recipient in the allative: *kellele + millest* (`teatas politseile`,
+  `Teatame Teile, et ...`). RahaPTS keeps them apart: reporting to the
+  Financial Intelligence Unit is `kahtlastest tehingutest teatamine`
+  (§ 32 lg 3; § 49 is the `teatamiskohustus`), and the tipping-off ban
+  in § 51, headed `Teate konfidentsiaalsus`, forbids *teavitada* the
+  client. `check_object_case` flags `teavitama` with an allative
+  recipient.
+- **AML internal rules.** RahaPTS § 14 calls them `protseduurireeglid`
+  and `sisekontrollieeskiri`. `sisekord` is an institution's house
+  rules (kodukord, sisekorraeeskiri), not the AML document.
+- **Payments and crypto.** `e-raha asutus`, two words (makseasutuste ja
+  e-raha asutuste seadus § 7), and `makseasutus` (§ 5). spell_check
+  passes `e-rahaasutus`; do not use it. In RahaPTS the prefix
+  `virtuaal-` meant crypto (`virtuaalvääring`), and since 1 July 2026
+  the act says `krüptovara` and `krüptovarateenuse osutaja`; never use
+  `virtuaal-` for e-money.
+- **Lawyers.** `advokaat` is a protected title (advokatuuriseadus § 22
+  lg 3: members of Eesti Advokatuur). For a law firm's attorneys on a
+  deal, `advokaadid` is right; for anyone else with a law degree,
+  `juristid`; `õigusnõustajad` is the neutral word.
+- **Result or process.** `hinnang` is the opinion you rely on
+  (`toetudes audiitori hinnangule`), `hindamine` the act of assessing. A
+  written valuation is a `hindamisaruanne`; a statutory audit gives an
+  `arvamus` in a `vandeaudiitori aruanne`.
+- **Due diligence.** There is no settled Estonian term. Keep `due
+  diligence` as a quoted foreign term, inflected with an apostrophe
+  (`due diligence'i`), and explain it once. RahaPTS `hoolsusmeetmed`
+  are customer due diligence measures, a different thing.
+- **Section names.** `liikmesus` and `liikmelisus` are both correct, as
+  are `täiendkoolitus` and `täienduskoolitus` (the statute says
+  `täienduskoolitus`). Pick one per document and run
+  `check_term_consistency`.
+- `common_legal_usage` indexes five core codes only, so `found: false`
+  for these AML and payment terms means not indexed, nothing more.
+
+### The comma that closes a clause, also before ja
+
+A subordinate clause inside a main clause takes a comma on both sides
+(EKI õigekirja põhireeglid, reegel 44): `Projekt, mida juhtisin,
+kestis kaks aastat.` The closing comma stays even before ja, ning, ega,
+ehk, või when the main clause continues after the conjunction (reegel
+44, märkus 2): `Juhtisin projekti, mis kestis kaks aastat, ja koolitasin
+uusi töötajaid.`, `õpetajana, kes hindab kirjandeid, ja õpilasena,
+keda hinnatakse`. "There is almost never a comma before ja" is true
+of ja joining words or main clauses, and wrong here. No comma before ja
+when two clauses describe the same antecedent (`majas, mille ehitas mu
+isa ja milles on kolm tuba`) or when ja joins words inside the clause
+(`firmaga, mis teeb koostööd ülikooli ja haiglaga`). `check_punctuation`
+flags the missing closing comma before the main verb, and before a ja
+whose verb is clearly the main clause's (a change of person); the
+essive and other parallel-case versions it cannot see, so read every
+`, kes ... ja X-na` yourself.
+
+### First person, and how a request is phrased
+
+A first-person document (a cover letter, an application, a personal
+profile) keeps one person. If the text says
+`Juhtisin`, `Ehitasin`, `Vastutan`, then `Elab Tartus ja õpetab
+matemaatikat` is a pasted third-person line: make it `Elan Tartus ja
+õpetan matemaatikat`. A bio written
+wholly in the third person is a genre and stays as it is; verbless
+nominal lines (`Finantsjuht, 2019-2022`) are fine in either. No tool
+checks this: morphology cannot tell a dropped "I" from a company named
+in the heading.
+
+In a letter, `Küsin täpsemalt, kas ...` reads as translated:
+`täpsemalt` assumes an earlier, broader question, and the present
+`küsin` narrates the asking instead of making the request. Write
+`Palun täpsustage, kas ...` or `Sooviksin täpsemalt teada, kas ...`
+(plural: `Palume täpsustada`, `Sooviksime täpsemalt teada`). Plain
+`Küsin, kas ...` is natural, and so is `Küsin täpsemalt järgmisel
+kohtumisel` (a plan). `check_officialese` flags only the request form.
+
+The same tool flags other translated letter formulas (`calque-phrase`):
+`Palun leidke manuses` → `Manuses on ...` (but `Hinnapakkumise leiate
+manusest` is fine), `ärge kõhelge ühendust võtmast` → `võtke julgelt
+ühendust`, `see kiri leiab teid hästi` (drop it), `tänan teid teie ...
+eest` → `tänan teid ... eest`, `vaatan edasi koostööle` → `ootan huviga
+koostööd`, `sealhulgas, kuid mitte ainult` → `sealhulgas`.
+
+### Light verbs and -mine nouns
+
+`läbi viima` and `läbiviimine` are a style matter, not an error (EKI
+does not normalise them), but they are the commonest kantseliit in
+reports. Choose the verb by the object: a meeting, seminar, conference
+or appraisal interview is `pidama` (`koosolek viidi läbi` →
+`koosolekut peeti`); a survey, competition, tender or event is
+`korraldama`; an analysis is `analüüsima`, a check `kontrollima`, an
+audit `auditeerima`, a study `uurima`. Often the phrase just goes:
+`tööde läbiviimise kvaliteet` → `tööde kvaliteet`. A route is not
+kantseliit: `Rada viib läbi metsa`. When turning a -mine noun into a
+verb, a particle verb is written apart (`läbivaatamine` → `läbi
+vaatama`, `heakskiitmine` → `heaks kiitma`) and a noun+verb compound
+has no compound verb (`riskihindamine` → `riske hindama`), while
+`taaskasutamine` → `taaskasutama` stays joined.
 
 ## Anti-patterns
 

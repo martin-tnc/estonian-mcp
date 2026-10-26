@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -437,16 +438,71 @@ for c in r["all_compounds"]:
         break
 
 print("check_abbreviation_hyphenation")
-r = server.check_abbreviation_hyphenation(
-    "Jooksutasin teksti Estonian MCPst läbi."
-)
-check("flags MCPst → MCP-st",
-      any(i["word"] == "MCPst" and i["suggestion"] == "MCP-st"
-          for i in r["issues"]), str(r["issues"]))
-r = server.check_abbreviation_hyphenation(
-    "APIga ühendamine ja MCPst lugemine on lihtne."
-)
-check("flags multiple abbreviations", len(r["issues"]) == 2, str(r["issues"]))
+# EKI accepts an all-capital abbreviation's case ending with or without a
+# hyphen (ELi ~ EL-i, ASidel ~ AS-idel) and prefers the hyphen only before
+# an ending that starts with l (THI-l, mitte THIl). Only that is flagged.
+r = server.check_abbreviation_hyphenation("Saatsin arve OÜle ja küsisin ÜROlt.")
+check("flags OÜle → OÜ-le and ÜROlt → ÜRO-lt",
+      [(i["word"], i["suggestion"]) for i in r["issues"]]
+      == [("OÜle", "OÜ-le"), ("ÜROlt", "ÜRO-lt")], str(r["issues"]))
+check("two hits: the summary counts in the partitive",
+      r["summary_estonian"].startswith("Leiti 2 l-algulist käändelõppu,"), r["summary_estonian"])
+r = server.check_abbreviation_hyphenation("Otsus jäi THIl tegemata.")
+check("flags EKI's own example THIl → THI-l",
+      [i["suggestion"] for i in r["issues"]] == ["THI-l"], str(r["issues"]))
+check("one hit: the summary keeps the nominative (1 käändelõpp)",
+      r["summary_estonian"].startswith("Leiti 1 l-alguline käändelõpp,"), r["summary_estonian"])
+# A stem read with a final consonant (ess, ell) takes the stem vowel, as in
+# EL-i (EKI "Lühendamine"): ASle is misinflected, not just unhyphenated. A
+# digit keeps the bare ending (EKI: MP3-le), and DJ is read dii-džei.
+r = server.check_abbreviation_hyphenation("Arve saadeti ASle, toetus saadi ELlt ja SMSl on piir.")
+check("consonant-final letter name gets the stem vowel",
+      [i["suggestion"] for i in r["issues"]] == ["AS-ile", "EL-ilt", "SMS-il"], str(r["issues"]))
+check("the summary names the stem vowel",
+      "tüvevokaal i" in r["summary_estonian"], r["summary_estonian"])
+r = server.check_abbreviation_hyphenation("Päring läks SQLle, fail PDFle ja uudis ERRle.")
+check("SQL, PDF and ERR get the stem vowel",
+      [i["suggestion"] for i in r["issues"]] == ["SQL-ile", "PDF-ile", "ERR-ile"], str(r["issues"]))
+r = server.check_abbreviation_hyphenation("Fail läks MP3le ja kiri DJle.")
+check("a digit and DJ keep the bare ending",
+      [i["suggestion"] for i in r["issues"]] == ["MP3-le", "DJ-le"], str(r["issues"]))
+# A Roman ordinal before a noun in the same case takes no ending at all
+# (EKI "Arvukirjutus": VI peatükis, mitte VI-s peatükis). With no such noun
+# it keeps one, hyphenated. CD and MM are abbreviations, not numerals.
+r = server.check_abbreviation_hyphenation("Võistlus toimus XIIl korral ja ta osales IVl etapil.")
+check("Roman ordinal before a same-case noun: the bare numeral",
+      [i["suggestion"] for i in r["issues"]] == ["XII", "IV"], str(r["issues"]))
+check("the summary says the numeral drops the ending",
+      "käändelõputa" in r["summary_estonian"], r["summary_estonian"])
+r = server.check_abbreviation_hyphenation("XIIl sajandil ehitati kirik.")
+check("XIIl sajandil → XII", [i["suggestion"] for i in r["issues"]] == ["XII"], str(r["issues"]))
+r = server.check_abbreviation_hyphenation("Linn püstitas kuningas Tõnis XIIle ausamba.")
+check("Roman numeral with no same-case noun after keeps the ending",
+      [i["suggestion"] for i in r["issues"]] == ["XII-le"], str(r["issues"]))
+r = server.check_abbreviation_hyphenation("Kiri läks CDle. Ta jäi MMl eelmisel aastal neljandaks.")
+check("CD and MM are abbreviations, not Roman numerals",
+      [i["suggestion"] for i in r["issues"]] == ["CD-le", "MM-il"], str(r["issues"]))
+# Chloride formulas: Vabamorf reads HCl as HC plus the adessive l, but the
+# l is the l of Cl. BBCl and PCl have no digit and are not common formulas,
+# so they are still flagged, as are ITl and NBAl (I + Tl, N + B + Al).
+for ok in ("Soolhape ehk HCl on tugev hape.", "Katses kasutati KCl lahust.",
+           "Ammooniumkloriidi valem on NH4Cl.", "Klorometaan CH3Cl on värvitu gaas.",
+           "Kloroetaan C2H5Cl on tuntud ka kui etüülkloriid.",
+           "Hüpokloorishape HOCl tekib kloori lahustamisel vees.",
+           "Joodmonokloriid ICl on punakaspruun vedelik.", "Nitrosüülkloriid NOCl on kollane gaas.",
+           "Lahusele lisati HCl ja KCl.", "Katses kasutati 0,1 M HCl lahust.",
+           "| HCl lahus | ml | 250 |", "HCl LAHUSE VALMISTAMINE"):
+    r = server.check_abbreviation_hyphenation(ok)
+    check(f"chloride formula not flagged: {ok}", r["issues"] == [], str(r["issues"]))
+r = server.check_abbreviation_hyphenation("Mängin PCl, saade oli BBCl, teade tuli ITl ja mängijad olid NBAl.")
+check("an adessive that only looks like a formula is still flagged",
+      [i["suggestion"] for i in r["issues"]] == ["PC-l", "BBC-l", "IT-l", "NBA-l"], str(r["issues"]))
+for ok in ("ELi liikmesriigid leppisid kokku.", "Ta töötas ELis ja hiljem ÜROs.",
+           "APIga ühendamine ja MCPst lugemine on lihtne.", "Lepingu sõlmis ASiga uus partner.",
+           "Kaebus esitati ELile ja toetus saadi ELilt.", "Juhatuse liikmeid on ASil kaks.",
+           "KOVidele saadeti uued juhised.", "Kasutame APIs uut liidest."):
+    r = server.check_abbreviation_hyphenation(ok)
+    check(f"EKI-correct hyphenless form not flagged: {ok}", r["issues"] == [], str(r["issues"]))
 clean = server.check_abbreviation_hyphenation(
     "Saatsin kirja OÜ-le ja kasutasin API-t."
 )
@@ -455,17 +511,54 @@ nom = server.check_abbreviation_hyphenation("Tegu on MCP serveriga.")
 check("bare nominative MCP not flagged", len(nom["issues"]) == 0, str(nom["issues"]))
 plain = server.check_abbreviation_hyphenation("Käisin poes ja ostsin leiba.")
 check("plain text: no flags", len(plain["issues"]) == 0, str(plain["issues"]))
-r = server.check_abbreviation_hyphenation("Lugesin MCPst.")
+r = server.check_abbreviation_hyphenation("Kirjutasin MTÜle.")
 check("rule_estonian populated",
-      all(i.get("rule_estonian") for i in r["issues"]),
+      r["issues"] and all(i.get("rule_estonian") for i in r["issues"]),
       str([i.get("rule_estonian") for i in r["issues"]]))
 # The description promises this scope: any all-capital stem counts, known
 # or not, and a mixed-case stem is never checked. Change both together.
-r = server.check_abbreviation_hyphenation("XYZQst tuli abi.")
+r = server.check_abbreviation_hyphenation("XYZQle tuli abi.")
 check("unknown all-caps stem flagged",
-      [i["suggestion"] for i in r["issues"]] == ["XYZQ-st"], str(r["issues"]))
-r = server.check_abbreviation_hyphenation("Kasutame SaaSi.")
+      [i["suggestion"] for i in r["issues"]] == ["XYZQ-le"], str(r["issues"]))
+r = server.check_abbreviation_hyphenation("Kasutame SaaSile.")
 check("mixed-case stem not checked", r["issues"] == [], str(r["issues"]))
+# Every hit is one regex on its stem and a look at the next word, so the
+# check costs little beyond EstNLTK's own tagging.
+_unit = "Arve läks ASle ja OÜle. XIIl sajandil lisati HCl ja NH4Cl. "
+_text = (_unit * (100_000 // len(_unit) + 1))[:100_000]
+_t = time.perf_counter()
+_tagged = server._Text()(_text)
+_tagged.tag_layer(["morph_analysis"])
+_tagging = time.perf_counter() - _t
+_t = time.perf_counter()
+server.check_abbreviation_hyphenation(_text)
+_dt = time.perf_counter() - _t
+check(f"100,000 characters: {_dt:.2f} s, tagging {_tagging:.2f} s",
+      _dt < 2 * _tagging + 3, f"{_dt:.2f} s against {_tagging:.2f} s")
+# The word after a Roman ordinal is looked up out of context only when
+# disambiguation kept no noun reading in the ordinal's case (XIIl korral:
+# korral comes out as the postposition), at most _ABBR_LOOKUPS times.
+_roots = ["maja", "kooli", "aia", "puu", "kivi", "vee", "tee", "linna", "metsa", "auto"]
+_words = {"".join(_roots[(n * 7919 // 10 ** k) % 10] for k in range(5)) for n in range(400)}
+_text = "".join(f"XIIl {w} juures. " for w in sorted(_words))
+_real, _calls = server._vabamorf, []
+
+
+class _Counting:
+    def analyze(self, **kwargs):
+        _calls.append(kwargs["words"])
+        return _real().analyze(**kwargs)
+
+
+server._abbr_noun_forms.cache_clear()
+server._vabamorf = _Counting
+try:
+    r = server.check_abbreviation_hyphenation(_text)
+finally:
+    server._vabamorf = _real
+check(f"{len(_calls)} out-of-context lookups for {len(_words)} new words",
+      0 < len(_calls) <= server._ABBR_LOOKUPS and len(r["issues"]) == len(_words),
+      f"{len(_calls)} lookups, {len(r['issues'])} issues")
 
 print("check_object_case")
 # Negation rule
@@ -647,7 +740,7 @@ _SHAPE_CALLS = {
     "check_numbers": "See maksis 3.14 eurot.",
     "check_redundancy": "Samuti ka. See on kõige optimaalsem. Pikk ajaline periood.",
     "check_object_case": "Ma ei söönud leib. Ma armastan koogi.",
-    "check_abbreviation_hyphenation": "MCPst tuleb abi.",
+    "check_abbreviation_hyphenation": "OÜle tuleb abi.",
 }
 for _name, _text in _SHAPE_CALLS.items():
     r = getattr(server, _name)(_text)

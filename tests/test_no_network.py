@@ -108,7 +108,7 @@ TOOL_CALLS: dict[str, tuple] = {
     "check_numbers": ("Pi on 3.14.",),
     "check_redundancy": ("Samuti ka.",),
     "check_object_case": ("Ma ei näen koera.",),
-    "check_abbreviation_hyphenation": ("MCPst tuleb abi.",),
+    "check_abbreviation_hyphenation": ("OÜle tuleb abi.",),
     "check_compound_familiarity": ("See on mõtteliin.",),
     "check_domain_terms": ("See on mõtteliin.",),
     "check_hyphenation": ("koerad",),
