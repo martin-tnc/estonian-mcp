@@ -5652,8 +5652,9 @@ def _teavitama_recipient_issues(sent_spans: list, text: str,
 
     `teatama-partitive-person`: teatama right before a partitive personal
     pronoun that ends the clause or comes before et or an elative noun
-    (Teatame Teid, et ...). Teatame Teid puudutavatest muudatustest is
-    right: there an active participle governs the pronoun. One within 8
+    (Teatame Teid, et ...). In Teatame Teid puudutavatest muudatustest the
+    pronoun is not teatama's object but the participle's, so it is not
+    flagged, though Teatame Teile ... reads better. A participle within 8
     tokens, past commas, adverbial elatives and a coordinated object, that
     is elative itself or comes before the elative noun it describes, counts
     (Teatame meid südamest rõõmustanud uudisest; Teatame Teid, Teie
@@ -6168,8 +6169,9 @@ def check_object_case(text: Annotated[str, Field(description="Estonian text.")])
     (kolimisest teisele korrusele), the experiencer of an adverb or a
     translative (meile teadaolevalt, kõigile üllatuseks) and an allative
     after a heading line are not flagged, and neither is a partitive
-    pronoun that a participle governs (Teatame Teid puudutavatest
-    muudatustest).
+    pronoun that a following participle governs (Teatame Teid
+    puudutavatest muudatustest: grammatical, but Teatame Teile ... reads
+    better).
     """
     return _check_object_case(text)
 

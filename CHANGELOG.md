@@ -39,8 +39,10 @@ in their explanation.
   üllatuseks`), a post (`kandideerimine ametile`) and an allative after
   a heading line. The prototype raised no flag on the 388 acts in force
   in Riigi Teataja. The narrow `teatama-partitive-person` flags `Teatame
-  Teid, et ...` but not `Teatame Teid puudutavatest muudatustest`, where
-  a participle governs the pronoun. The tool is also about five times
+  Teid, et ...` and `Teatame Teid muudatustest`. It stays quiet only when
+  `Teid` is not teatama's object but a participle's (`Teid puudutavatest
+  muudatustest`); that wording still reads like the error, so write
+  `Teatame Teile ...` or `Anname teada ...` there. The tool is also about five times
   faster on long texts (a 100,000-character text took 18 to 25 s).
 - **`check_punctuation` flags the comma that closes an embedded
   clause** (EKI õigekirja põhireeglid, reegel 44).
