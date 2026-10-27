@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import bisect
 import collections
 import difflib
 import hashlib
@@ -35,7 +36,7 @@ import secrets
 import sys
 import time
 import unicodedata
-from functools import lru_cache
+from functools import cached_property, lru_cache
 from pathlib import Path
 from typing import Annotated, Any, TypedDict
 
@@ -91,7 +92,7 @@ DEFAULT_STATIC_RATE_LIMIT_PER_MINUTE = 60
 _TRUSTED_PROXY_HOPS = max(0, int(os.environ.get("ESTNLTK_MCP_TRUSTED_PROXY_HOPS", "1")))
 
 # Bumped manually in lockstep with pyproject.toml's [project].version.
-SERVER_VERSION = "0.9.0"
+SERVER_VERSION = "0.10.0"
 
 # Favicons served alongside the MCP endpoint so Google's favicon service
 # (used by the Anthropic Connectors Directory + tool-call UI in Claude)
@@ -777,6 +778,163 @@ _NON_OBJECT_CASES: frozenset[str] = frozenset({
     "pl tr", "pl ter", "pl es", "pl ab", "pl kom",
 })
 
+# check_object_case, teavitama vs teatama. teavitama and informeerima take
+# the person in the partitive (keda + millest: teavitas politseid
+# õnnetusest); teatama takes the recipient in the allative (kellele:
+# teatas politseile). Sõnaveeb, ÕS 2025, Valik rektsioone and the AMSS give
+# teavitama no allative, and RahaPTS § 49 lg 3^1 uses both correctly in one
+# sentence. With the guards below the detector made 0 false flags on all
+# 388 current statutes in Riigi Teataja (a naive version made 6) and on the
+# edited Korp corpora; precision on unedited web and newspaper text was
+# about 97 to 100%, at the price of about half the recall.
+_TEAV_HINT = re.compile(r"teavit|informeeri|teata", re.IGNORECASE)
+_TEAV_VERBS_ET: frozenset[str] = frozenset({"teavitama", "informeerima"})
+# Only the action noun in the nominative. teavitus (a notice), teavitaja,
+# the genitive teavitamise and the compound teavitamiskohustus have other
+# lemmas or forms and never trigger.
+_TEAV_NOUNS_ET: frozenset[str] = frozenset({"teavitamine", "informeerimine"})
+# Vabamorf lemmatises teile/Teile as sina and meile as mina.
+_TEAV_RECIPIENT_PRONOUNS_ET: frozenset[str] = frozenset({
+    "mina", "sina", "tema", "meie", "teie", "nemad", "kes", "kõik",
+    "igaüks", "keegi", "mõlemad", "teine", "kumbki", "iga",
+})
+# Matched against the last compound part of span.root (andme_büroo ->
+# büroo), since the lemma carries no compound marks. An address, a phone
+# number, an account or a deadline is not a recipient and is skipped.
+_TEAV_RECIPIENT_HEADS_ET: frozenset[str] = frozenset({
+    "amet", "ametkond", "asutus", "büroo", "inspektsioon", "keskus", "komisjon", "politsei",
+    "pank", "kool", "omavalitsus", "ministeerium", "valitsus", "juhatus", "nõukogu", "kohus",
+    "prokuratuur", "kantselei", "teenistus", "agentuur", "fond", "ettevõte", "firma", "ühing",
+    "ühistu", "organisatsioon", "selts", "liit", "koda", "vald", "linnavalitsus", "kogu",
+    "klient", "patsient", "juht", "ülemus", "kolleeg", "naaber", "sõber", "omanik", "liige",
+    "osanik", "aktsionär", "investor", "partner", "isik", "inimene", "elanik", "kodanik",
+    "õpilane", "tudeng", "üliõpilane", "ajakirjanik", "avalikkus", "üldsus", "meedia",
+    "politseinik", "arst", "õde", "notar", "advokaat", "audiitor", "maakler", "operaator",
+    "administraator", "abonent", "vanem", "lapsevanem", "laps", "pere", "perekond", "sugulane",
+    "lähedane", "kaaslane", "ametnik", "spetsialist", "kasutaja", "töötaja", "tööandja",
+    "kiirabi", "päästeamet", "häirekeskus", "tuletõrje", "kindlustusandja", "kandidaat",
+    "esindaja", "volinik", "kantsler", "minister", "riik", "liikmesriik", "pool",
+})
+# A root ending in -ja is an agent noun (töö_andja, osuta=ja) unless it is
+# one of these.
+_TEAV_NOT_AGENT_JA_ET: frozenset[str] = frozenset({
+    "maja", "raja", "kaja", "vaja", "tuja", "pooja",
+})
+# A word right before the allative phrase that governs it (vastavalt
+# seadusele, lisaks klientidele, viitega USA ametlikele ...). Matched on the
+# word form as well as the lemma: viitega is lemma viide.
+_TEAV_ALLATIVE_GOVERNORS_ET: frozenset[str] = frozenset({
+    "vastavalt", "tänu", "vaatamata", "lisaks", "sarnaselt", "erinevalt", "lähedal",
+    "lähedale", "omakorda", "viitega", "viidates", "osutades", "tuginedes", "toetudes",
+    "vastuseks", "võrreldes", "kohaselt", "vastukaaluks", "suunatud", "mõeldud",
+})
+# Nouns that take an allative attribute, so an elative one right before the
+# allative owns it (teavitame muudatuse mõjust klientidele).
+_TEAV_ALLATIVE_ATTR_NOUNS_ET: frozenset[str] = frozenset({
+    "mõju", "juurdepääs", "ligipääs", "üleminek", "vastus", "teade", "teavitus", "sõnum",
+    "kiri", "kõne", "pakkumine", "hüvitis", "toetus", "soodustus", "abi", "nõue", "kohustus",
+    "õigus", "luba", "tegevusluba", "kaebus", "pöördumine", "avaldus", "ettepanek", "soovitus",
+    "juhis", "korraldus", "ettekirjutus", "viide", "oht", "kahju", "kasu", "tasu", "makse",
+    "väljamakse", "laen", "kingitus", "preemia", "auhind", "stipendium", "edasilükkamine",
+})
+# Verbs with an allative recipient of their own. Their -mine noun owns a
+# nearby allative (ettevõtjale tegevusloa andmise otsusest).
+_TEAV_DITRANSITIVE_VERBS_ET: frozenset[str] = frozenset({
+    "andma", "saatma", "edastama", "esitama", "väljastama", "üle_andma", "määrama", "maksma",
+    "tagastama", "müüma", "osutama", "pakkuma", "eraldama", "võimaldama", "tagama",
+    "selgitama", "tutvustama", "näitama", "soovitama", "lubama", "delegeerima", "suunama",
+    "teatama", "kätte_toimetama", "loovutama", "laenama", "üürima", "rentima", "omistama",
+    "kinkima", "hüvitama", "kompenseerima", "vastama", "helistama", "kirjutama",
+    "adresseerima", "esitlema",
+})
+_TEAV_DITRANSITIVE_ENDINGS = tuple(sorted(v.replace("_", "") for v in _TEAV_DITRANSITIVE_VERBS_ET))
+# Verbs whose allative is a post, not a recipient. Their -mine noun right
+# after a bare amet owns it: kantsleri ametile kandideerimise tingimustest.
+# kolima stays out (teavitas tööandjale kolimisest is an error).
+_TEAV_POST_GOAL_VERBS_ET: frozenset[str] = frozenset({"kandideerima", "asuma"})
+# Adjectives that govern an allative of their own (kõigile osalejatele
+# mõistetavas keeles, meile oluline).
+_TEAV_ALLATIVE_ADJECTIVES_ET: frozenset[str] = frozenset({
+    "oluline", "tähtis", "vajalik", "kasulik", "kahjulik", "ohtlik", "sobilik", "sobimatu",
+    "tundmatu", "võõras", "omane", "iseloomulik", "kohane", "kohustuslik", "ebameeldiv",
+    "ootamatu", "lihtne", "raske", "keeruline", "mugav", "kallis", "tänulik", "truu",
+    "sarnane", "lähedane", "ühine", "selge", "kättesaamatu", "soodne", "ebasoodne",
+    "jõukohane", "valus", "piinlik", "olulisem", "tähtsam", "vajalikum", "kasulikum",
+    "arusaamatu", "teadmata", "teadaolev", "ühesugune", "erinev", "võrdne", "kohustuslikum",
+    "mürgine", "ligipääsmatu", "ühtne", "kahjutu", "ohutu", "harjumatu", "tasuline",
+    "vabatahtlik", "eakohane", "eluohtlik", "terviseohtlik",
+})
+# A compound counts as its last part in the two lists above (lisatoetus as
+# toetus, ülioluline as oluline), except these heads, whose first part
+# names a norm or a hazard rather than a person: ajakohane, nõuetekohane,
+# tuleohtlik.
+_TEAV_NON_INHERITING_HEADS_ET: frozenset[str] = frozenset({"kohane", "ohtlik", "ohutu"})
+# The experiencer of an adverb or a translative noun right after the
+# allative, not a recipient: meile teadaolevalt, kõigile üllatuseks, Teile
+# teadmiseks. The nouns count only in the translative singular, so
+# meile reedeks is still flagged.
+_TEAV_EXPERIENCER_ADVERBS_ET: frozenset[str] = frozenset({
+    "teadaolevalt", "arusaadavalt", "arusaamatult", "nähtavalt", "kuuldavalt",
+    "märkamatult", "ootamatult", "mõistetavalt", "omaselt", "iseloomulikult",
+})
+_TEAV_EXPERIENCER_TRANSLATIVES_ET: frozenset[str] = frozenset({
+    "üllatus", "rõõm", "heameel", "hoiatus", "teadmine", "tutvumine", "info",
+    "informatsioon", "eeskuju", "meelehea", "pahameel", "meelehärm", "kurbus",
+    "kurvastus", "pettumus", "kergendus", "hämmastus", "nördimus", "õnn",
+})
+# Clause boundaries: a conjunction, a relative pronoun not in the allative
+# (kellele is a recipient) or a relative/interrogative adverb.
+_TEAV_CLAUSE_CONJUNCTIONS_ET: frozenset[str] = frozenset({
+    "ja", "ning", "või", "ega", "kui", "et", "sest", "aga", "kuid", "vaid",
+    "nagu", "kuna", "kuigi", "ehk", "ent", "nii",
+})
+_TEAV_RELATIVE_PRONOUNS_ET: frozenset[str] = frozenset({"mis", "kes", "milline", "missugune"})
+_TEAV_RELATIVE_ADVERBS_ET: frozenset[str] = frozenset({
+    "kuhu", "kus", "kust", "kuidas", "millal", "miks", "kas", "kuni",
+})
+# The personal pronouns of the teatama rule, and the pronouns that end an
+# allative phrase as its head.
+_TEAV_PERSONAL_PRONOUNS_ET: frozenset[str] = frozenset({"mina", "sina", "tema", "meie", "teie"})
+_TEAV_HEAD_PRONOUNS_ET: frozenset[str] = _TEAV_PERSONAL_PRONOUNS_ET | {
+    "nemad", "kes", "keegi", "igaüks",
+}
+# A partitive of these is a time measure, not an object (kuu aega ette).
+_TEAV_TIME_MEASURES_ET: frozenset[str] = frozenset({
+    "aeg", "päev", "nädal", "kuu", "aasta", "tund", "minut", "sekund", "kord", "öö",
+    "tööpäev", "kalendripäev",
+})
+# Finite forms: one after the allative phrase starts an unpunctuated clause
+# of its own. The shorter list is the one the token right after the phrase
+# is held against, where any other verb form is a participle or infinitive.
+_TEAV_FINITE_FORMS: frozenset[str] = frozenset({
+    "b", "vad", "s", "sid", "n", "d", "me", "te", "sin", "sime", "site", "takse", "ti",
+    "neg", "o", "ge", "gem", "ks", "ksid", "nuks", "taks", "vat", "gu", "tagu", "ksin",
+    "ksime", "ksite", "neg o", "neg nud", "neg tud", "neg ks", "neg vat", "neg gu",
+    "neg ge", "neg me",
+})
+_TEAV_NEXT_FINITE_FORMS: frozenset[str] = frozenset({
+    "b", "vad", "s", "sid", "n", "d", "me", "te", "sin", "sime", "site", "takse", "ti",
+    "neg", "o", "ge", "gem", "ks", "ksid", "nuks", "taks", "vat",
+})
+_TEAV_NONFINITE_FORMS: frozenset[str] = frozenset({
+    "tud", "nud", "v", "tav", "mata", "des", "da", "ma", "mas", "mast", "maks",
+})
+# Suggestions: the pronoun forms Vabamorf would otherwise have to guess.
+_TEAV_PARTITIVE_OF_ALLATIVE: dict[str, str] = {
+    "mulle": "mind", "minule": "mind", "sulle": "sind", "sinule": "sind",
+    "talle": "teda", "temale": "teda", "meile": "meid", "teile": "teid",
+    "neile": "neid", "kõigile": "kõiki", "kellele": "keda", "teistele": "teisi",
+}
+_TEAV_GENITIVE_OF_ALLATIVE: dict[str, str] = {
+    "mulle": "minu", "minule": "minu", "sulle": "sinu", "sinule": "sinu",
+    "talle": "tema", "temale": "tema", "meile": "meie", "teile": "teie",
+    "neile": "nende", "kõigile": "kõigi", "kellele": "kelle", "teistele": "teiste",
+}
+_TEAV_ALLATIVE_OF_PARTITIVE: dict[str, str] = {
+    "mind": "mulle", "sind": "sulle", "teda": "talle", "meid": "meile",
+    "teid": "teile", "neid": "neile",
+}
+
 
 _HEDGING_WORDS_ET: frozenset[str] = frozenset({
     "võib-olla", "võibolla", "umbes", "vist", "pigem", "äkki",
@@ -935,6 +1093,102 @@ _NONFINITE_FORMS: frozenset[str] = frozenset({
     "da", "des", "ma", "mas", "mast", "maks", "mata", "tama", "v", "tav",
 })
 
+# et right after a coordinator opens a coordinated clause and takes no
+# comma (..., et see on õige ja et me peaksime jätkama): EKI õigekirja
+# põhireeglid 2025, reegel 45 märkus, sets no comma at ja, ning, ega, ehk
+# or või. või is also a noun (Sulata või et see seguneks), so it counts
+# only after an earlier et in the sentence.
+_ET_COORDINATORS: frozenset[str] = frozenset({"ja", "ning", "ega", "ehk"})
+
+# The closing comma of an embedded clause (EKI õigekirja põhireeglid
+# 2025, reegel 44: a clause inside the main clause is set off by commas
+# on both sides, Mees, kes seal seisis, oli minu isa). A clause is its
+# predicate (reegel 44, sõnaseletus 2), so the scan keys on finite verbs:
+# Vabamorf form codes of the persons and the negations ei, pole, polnud,
+# poleks. Imperatives (o, ge, gem, gu, tagu) and the bare negative stem
+# (ta) are left out: too is read as a pronoun, ära as an adverb, and an o
+# form mostly follows ei.
+_FINITE_FORMS: frozenset[str] = frozenset({
+    "b", "d", "me", "n", "te", "vad", "s", "sid", "sime", "sin", "site",
+    "ks", "ksid", "ksime", "ksin", "ksite",
+    "nuks", "nuksid", "nuksime", "nuksin", "nuksite",
+    "vat", "nuvat", "takse", "ti", "taks", "tuks", "tavat", "tuvat",
+    "neg", "neg o", "neg nud", "neg ks", "neg vat",
+})
+
+# Verb forms that cannot be the main clause's predicate on their own: the
+# nonfinite forms and the past participles (tehtud, kulunud).
+_NONPREDICATE_FORMS: frozenset[str] = _NONFINITE_FORMS | {"nud", "tud"}
+
+# Parts of speech a word must have no lexicon reading in to count as a
+# sure verb. P is not among them: Vabamorf gives tegi a pronoun reading.
+_NONVERB_POS: frozenset[str] = frozenset("SAKDNOCUHYGIJX")
+
+# What opens an embedded clause after a comma: a relative pronoun in any
+# case (kes, keda, kellega; mis, mida, millest; milline, missugune), kus,
+# kuhu or kust as written (kust is also a form of the noun kusi), or a
+# subordinator.
+_RELATIVE_LEMMAS: frozenset[str] = frozenset({"kes", "mis", "milline", "missugune"})
+_RELATIVE_ADVERBS: frozenset[str] = frozenset({"kus", "kuhu", "kust"})
+_CLAUSE_OPENERS: frozenset[str] = frozenset({
+    "et", "kui", "kuna", "kuigi", "kuni", "ehkki", "mil", "millal", "kuidas", "miks", "kas",
+})
+
+# Words that end the scan through a clause: past a conjunction (or any
+# word read as one, or a relative word) a verb may belong to another
+# clause.
+_CLAUSE_SCAN_STOP: frozenset[str] = frozenset({
+    "ja", "ning", "ega", "või", "ehk", "aga", "kuid", "vaid", "ent", "sest", "et", "kui",
+    "nagu", "kuna", "kuigi", "kuni", "ehkki", "justkui", "otsekui", "nii", "kas", "kus",
+    "kuhu", "kust", "millal", "kuidas", "miks", "mistõttu", "millepärast", "mispärast",
+    "seega", "siis",
+})
+
+# Coordinators that end the backward scan for the main clause's verb: the
+# verb before one belongs to the conjunct before it (Ta ostis selle, mis
+# oli odav, ja see, mis oli kallis, jäi poodi).
+_CLAUSE_COORDINATORS: frozenset[str] = frozenset({
+    "ja", "ning", "ega", "või", "ehk", "aga", "kuid", "vaid", "ent",
+})
+
+# Punctuation that ends a clause scan. Also single quotation marks (a
+# gloss: tähendab ‘on olemas’), a table cell edge (|), arrows (→, ⇒;
+# => comes as = and >) and HTML tags (_clause_mark).
+_CLAUSE_BOUNDARY_MARKS: frozenset[str] = frozenset({
+    ",", ";", ":", "(", ")", "[", "]", "-", "\u2013", "\u2014", "/",
+    "„", "“", "”", '"', "«", "»", "'", ".", "!", "?", "…", "...",
+    "\u2018", "\u2019", "\u201a", "\u2039", "\u203a", "|", "\u2192", "\u21d2", "<", ">",
+})
+
+# Question words that make ei tea or jumal teab one indefinite phrase
+# (käinud ei tea kus, rääkis ei tea kellest), besides the relative words.
+_INDEFINITE_WH: frozenset[str] = frozenset({"millal", "kunas", "kuidas", "miks"})
+
+# Verbs whose nominative after them is a predicative (kui olin laps), so
+# it cannot be the main clause's fronted subject.
+_COPULA_LEMMAS: frozenset[str] = frozenset({
+    "olema", "saama", "jääma", "tunduma", "paistma", "näima", "muutuma", "osutuma",
+})
+
+# Lexicon lookups one check_punctuation text may make for the words next
+# to on (Wake on LAN) and for a fronted subject; past that, the scan
+# reads on as a verb and keeps the comma before the main verb.
+_PUNCT_LOOKUPS = 128
+
+# The persons a finite form code can be in. sid, ksid and nuksid are 2nd
+# person singular or 3rd plural (olid). Codes not here (ks, neg, vat,
+# takse) say nothing about the person.
+_FORM_PERSONS: dict[str, frozenset[str]] = {
+    **dict.fromkeys(("n", "sin", "ksin", "nuksin"), frozenset({"1sg"})),
+    "d": frozenset({"2sg"}),
+    **dict.fromkeys(("sid", "ksid", "nuksid"), frozenset({"2sg", "3pl"})),
+    **dict.fromkeys(("b", "s"), frozenset({"3sg"})),
+    **dict.fromkeys(("me", "sime", "ksime", "nuksime"), frozenset({"1pl"})),
+    **dict.fromkeys(("te", "site", "ksite", "nuksite"), frozenset({"2pl"})),
+    "vad": frozenset({"3pl"}),
+}
+_THIRD_PERSONS: frozenset[str] = frozenset({"3sg", "3pl"})
+
 
 # Lexicons for check_redundancy: semantic doubling that's
 # grammatically fine but reads redundant to a native speaker. Kept
@@ -1030,19 +1284,344 @@ _OFFICIALESE_SURFACE_ET: dict[str, tuple[str, str]] = {
 }
 
 # Fixed officialese phrases (lowercased surface pairs) → (plain, why).
+# 'läbi viima' is not here: a surface pair caught four of its forms and
+# also 'Lapsed viidi läbi metsa koju'. _labi_viima_issues covers it.
 _OFFICIALESE_PHRASES_ET: dict[tuple[str, str], tuple[str, str]] = {
     ("kujutab", "endast"): ("on", "kantseliit; piisab tegusõnast 'on'"),
     ("kujutavad", "endast"): ("on", "kantseliit; piisab tegusõnast 'on'"),
-    ("viidi", "läbi"): ("tehti / korraldati", "tugiverb 'läbi viima'; kasuta konkreetset tegusõna"),
-    ("viiakse", "läbi"): ("tehakse / korraldatakse", "tugiverb 'läbi viima'; kasuta konkreetset tegusõna"),
-    ("läbi", "viia"): ("teha / korraldada", "tugiverb 'läbi viima'; kasuta konkreetset tegusõna"),
-    ("läbi", "viidud"): ("tehtud / korraldatud", "tugiverb 'läbi viima'; kasuta konkreetset tegusõna"),
     ("selles", "osas"): ("selle kohta", "kantseliitlik 'osas'; 'kohta' on lihtsam"),
     ("selle", "osas"): ("selle kohta", "kantseliitlik 'osas'; 'kohta' on lihtsam"),
     ("mille", "osas"): ("mille kohta", "kantseliitlik 'osas'; 'kohta' on lihtsam"),
     ("seoses", "sellega"): ("seetõttu", "kantseliit; 'seetõttu' on lühem"),
     ("arvestades", "asjaolu"): ("kuna", "kantseliit; alusta kõrvallauset sõnaga 'kuna'"),
+    # 'hetkel' alone is fine (Sõnaveeb: 'just nüüd, praegusel ajal'); the
+    # pair is the filler (AMSS: "Tänasel hetkel on sageli ka ülearune
+    # täiteväljend").
+    ("tänasel", "hetkel"): ("praegu", "ülearune täiteväljend; piisab sõnast 'praegu'"),
+    ("praegusel", "hetkel"): ("praegu", "stampväljend; piisab sõnast 'praegu'"),
 }
+
+# --- Translated stock phrases in letters and business prose -------------
+# (_calque_issues, rule calque-phrase). Each is anchored on more than one
+# word, because each word alone is ordinary Estonian. Sources: Mäekivi,
+# Emakeelne eurokeel (EKI 2013) and the Ametniku soovitussõnastik (AMSS)
+# for 'sealhulgas, kuid mitte ainult'; ÕS 2025 info notes for 'antud'
+# (vene данный, inglise given) and 'adresseerima' (inglise address);
+# Sõnaveeb's senses of 'kõhklema' and 'edasi vaatama'; EKI keelenõuanne
+# "Kuidas tarvitada arvutisõna manus?" for the idiomatic 'Manuses on ...'.
+# 'Leiate manusest' is EKI style and is not matched; 'läbi e-posti' is
+# not matched either, as ÕS 2025 accepts 'läbi' for a means.
+# 'eelkõige / eeskätt' (primarily) are not list openers: the tail is only
+# redundant there, so the explanation and the suggestion follow the head.
+_CALQUE_NOT_LIMITED_RE = re.compile(
+    r"\b(?P<head>sealhulgas|sh|näiteks|nt|eelkõige|eeskätt)\b[\s,(]*"
+    r"(?P<tail>(?:kuid|aga)\s+mitte\s+(?:ainult|üksnes))\b",
+    re.IGNORECASE)
+# 'antud hetkel' is also 'at any given moment' in a general rule (Igal
+# mängijal võib antud hetkel olla seitse kaarti), where 'praegu' would
+# change the rule, so that reading gets its own rewrite.
+_CALQUE_ANTUD_NOUNS: dict[str, str] = {
+    "juhul": "sel juhul", "hetkel": "praegu (üldreeglis: korraga)",
+    "olukorras": "selles olukorras", "kontekstis": "selles kontekstis",
+}
+# Before 'antud' these make it the participle 'given' (talle antud juhul,
+# eelnevalt antud olukorras, kohtu poolt antud olukorras), so the pair is
+# left alone.
+_CALQUE_ANTUD_PARTICIPLE_BEFORE = frozenset({
+    "ette", "eelnevalt", "varem", "juba", "üle", "välja", "kätte", "kaasa", "tagasi",
+    "poolt",
+})
+# 'on antud olukorras, kus ...', 'suuliselt antud hetkel, mil ...': after
+# a form of olema or a manner adverb, with a clause on the noun, 'antud'
+# is the passive perfect of andma and the noun says when it was given.
+_CALQUE_ANTUD_CLAUSE_AFTER = frozenset({"kus", "mil", "millal", "kui"})
+_CALQUE_PROBLEM_NOUNS = frozenset({
+    "probleem", "mure", "väljakutse", "puudus", "risk", "kitsaskoht", "vajadus",
+})
+# 'adresseerima' in its first Sõnaveeb sense, addressing or redirecting a
+# mail item (saadetised ümber adresseerima): a postal noun (or its compound
+# head: postisaadetis) or the particle 'ümber' near the verb means it is
+# not about a problem.
+_CALQUE_MAIL_NOUNS = frozenset({
+    "kiri", "e-kiri", "saadetis", "pakk", "ümbrik", "postkaart", "aadress",
+})
+_CALQUE_LETTER_NOUNS = frozenset({"kiri", "e-kiri", "sõnum", "meil", "e-mail", "läkitus"})
+# 'vaatan edasi X-le' is the calque only when X is an event one waits for;
+# 'vaatas edasi merele / emale otsa' is 'kept looking'. A compound counts
+# by its end (projektikoostöö), and any -mine noun is an event (kohtumine,
+# pakkumine, kuulmine).
+_CALQUE_LOOK_FORWARD_NOUNS = (
+    "koostöö", "vastus", "tagasiside", "üritus", "jätk", "kommentaar",
+    "ettepanek", "külaskäik", "vestlus", "arutelu", "mine",
+)
+# The word right after 'Palun leidke': an attachment as the place the
+# reader is pointed to. 'manus' counts in the inessive, elative or
+# essive only (manuses, manusest, manusena), not in 'manuse avamiseks';
+# 'kaasa lisatud' is matched as two words.
+_CALQUE_ATTACHED = frozenset({"lisatud", "lisast", "lisas"})
+_CALQUE_MANUS_FORMS = frozenset({"sg in", "sg el", "sg es", "pl in", "pl el", "pl es"})
+# Cases that put a word after 'teie / sinu' in a place or manner phrase
+# (sinu kodus, teie emakeeles), so the possessive is not the one that
+# 'tänan teid teie ... eest' repeats.
+_CALQUE_LOCAL_CASES = (" in", " el", " ill", " ad", " abl", " all", " tr", " ter",
+                       " es", " ab", " kom", "adt")
+
+# --- 'läbi viima' in the conduct sense (_labi_viima_issues) ---------------
+# A style hint, not a norm. EKI ühendsõnastik 2026 gives 'läbi viima'
+# ('korraldama, juhtima, teoks tegema') no register label and does not
+# normalise general-language meanings. The kantseliit judgement is EKI's
+# Ametniku soovitussõnastik (AMSS: "Teeb sõnastuse enamasti
+# kantseliitlikumaks ... asendatav nt sõnaga korraldama, tegema"), shared
+# by Kapanen (Õiguskeel 2019/2) and Militerm ('läbiviimine' väldi). AMSS
+# also lists the physical sense ('Rajatav kergtee viidi metsast läbi'),
+# common in descriptive prose ('Rada viib läbi metsa'); most guards below
+# are there to keep it quiet.
+
+# Nouns one conducts: Sõnaveeb's collocates of 'läbi viima' plus common
+# report and ceremony objects. Matched on the lemma or the compound head
+# (rahuloluküsitlus); any -mine noun of 7+ letters counts as well. Never
+# add what one is led THROUGH (kriis, protsess, etapp, periood, aeg,
+# raskus, torm, keerdkäik): 'Juht viis ettevõtte läbi kriisi' is a route.
+_LABI_VIIMA_EVENTS_ET: frozenset[str] = frozenset("""
+    uuring koolitus küsitlus intervjuu koosolek kampaania reform seminar
+    kursus uurimus eksperiment analüüs ekspertiis katse test konkurss
+    konverents õppus võistlus üritus viktoriin hange audit uurimistöö
+    valimised projekt istung hääletus eksam laager protseduur
+    arenguvestlus vestlus kontroll vaatlus inventuur revisjon läbivaatus
+    ülevaatus arutelu töötuba loeng praktikum menetlus operatsioon
+    referendum rahvahääletus tasemetöö kontrolltöö seire monitooring
+    sõeluuring katsetus tehing toiming muudatus ümberkorraldus
+    koolitusprogramm veebinar treening haarang reid rahvaloendus loendus
+    talgud simulatsioon pilootprojekt piloot esitlus nõupidamine
+    teenistus jumalateenistus talitus tseremoonia missa laulatus matus
+    rituaal riitus riigipööre reformatsioon puhastus retk enampakkumine
+    oksjon mobilisatsioon rünnak juurdlus ekspeditsioon õppetöö väljaõpe
+    turniir dessant palvus festival programm
+""".split())
+
+# Events one holds rather than organises: the suggestion leads with
+# pidama (AMSS: 'Arenguvestlust viiakse läbi' → 'Arenguvestlust peetakse').
+_LABI_VIIMA_PIDAMA_ET: frozenset[str] = frozenset("""
+    koosolek istung seminar konverents vestlus arenguvestlus loeng kursus
+    tund missa jumalateenistus teenistus talitus
+""".split())
+
+# Heads of a route subject or an antecedent: 'Rada viib läbi metsa',
+# 'Kraav, mis viib läbi surnuaia', or of a threaded object: 'Niit viiakse
+# läbi ja tõmmatakse pingule'.
+_LABI_VIIMA_ROUTES_ET: frozenset[str] = frozenset("""
+    tee rada maantee raudtee raudteeliin liin trass marsruut teerada
+    matkarada õpperada terviserada kõnnitee jalgtee sihtee allee tänav
+    kraav kanal jõgi oja toru kaabel juhe tunnel sild trepp käik koridor
+    uks värav niit nöör pael lõng traat voolik köis polt varras nõel rihm
+""".split())
+
+# Heads of the genitive object of 'läbiviimine' in its building sense:
+# 'kaabli läbiviimine', 'toru läbiviimine läbi tulemüüri'.
+_LABI_VIIMA_THREADED_ET: frozenset[str] = _LABI_VIIMA_ROUTES_ET | {"torustik"}
+
+# Events that are also places: 'Tee viib läbi laagri' is a route.
+_LABI_VIIMA_PLACE_EVENTS_ET: frozenset[str] = frozenset({"laager", "festival"})
+
+# 'Läbiviimine' is also the music-theory term for a fugue theme passing
+# through the voices. 'fuuga' marks that context alone; the others need
+# a second distinct term in the sentence ('teemal' and 'kaanoni' sit in
+# ordinary reports too).
+_LABI_VIIMA_MUSIC_ET: frozenset[str] = frozenset("""
+    teema hääl imitatsioon kaanon fuuga priim oktav kontrapunkt stretto
+    faktuur polüfoonia augmentatsioon diminutsioon dux comes helistik
+    toonika dominant sopran tenor bass vastak vahemäng
+""".split())
+
+# Postpositions that end a genitive chain after 'viidi läbi' without
+# making it a route: 'Uuringud viidi läbi küsitluse abil'.
+_LABI_VIIMA_NONSPATIAL_POSTP_ET: frozenset[str] = frozenset("""
+    abil käigus ajal raames jooksul põhjal alusel järgi toel vahendusel
+    eest tõttu pärast eel järel osalusel juhtimisel juhendamisel
+    korraldusel eestvedamisel
+""".split())
+
+# Words after (or before) 'läbi' that make it a route: 'Vii nõel siit
+# läbi', 'Kaabel viidi läbi seinast'.
+_LABI_VIIMA_LOCAL_ADV_ET: frozenset[str] = frozenset("""
+    siit sealt kust kustkaudu sealtkaudu tagasi sisse välja kaudu ümber
+    üle mööda
+""".split())
+
+# An elative of these is a time, not a source: 'aastast läbi viidud'.
+_LABI_VIIMA_TIME_NOUNS_ET: frozenset[str] = frozenset(
+    {"aasta", "kuu", "päev", "nädal", "aeg", "sajand", "algus"})
+
+# A time span in the nominative owns 'läbi' (EKSS läbi I.2: 'Eile sadas
+# päev läbi', 'suvi läbi'), and so does a measure phrase (mitu tundi läbi,
+# kuu aega läbi): 'Terve päev läbi viisime kaste autosse' is carrying.
+_LABI_VIIMA_SPAN_NOUNS_ET: frozenset[str] = frozenset("""
+    päev nädal kuu aasta aeg öö ööpäev tund minut sajand aastakümme
+    suvi talv kevad sügis hommik õhtu nädalavahetus
+""".split())
+_LABI_VIIMA_SPAN_QUANTIFIERS_ET: frozenset[str] = frozenset("""
+    mitu mõni paar tükk hulk kuu nädal aasta päev tund
+""".split())
+
+# viima's impersonal finite forms (viidi, viiakse), which take no
+# genitive object, and its own particles, which need no goal case.
+_VIIMA_IMPERSONAL_FORMS_ET: frozenset[str] = frozenset(
+    {"ti", "takse", "taks", "tagu", "tavat"})
+_VIIMA_GOAL_PARTICLES_ET: frozenset[str] = frozenset(
+    {"ellu", "sisse", "välja", "üle", "kurssi", "täide", "lõpule", "kokku"})
+
+# viima's personal active forms: a singular nominative before them is the
+# subject, not the thing conducted ('Retk viis läbi Lõuna-Eesti metsade').
+_VIIMA_ACTIVE_FORMS_ET: frozenset[str] = frozenset("""
+    n d b me te vad sin sid s sime site ksin ks ksid ksime ksite nud
+""".split())
+
+# Non-finite verb forms. After a finite verb, 'läbi' before a numeral
+# surface is that verb's particle: 'Kontrollisime läbi viis stsenaariumi'.
+_NONFINITE_VERB_FORMS_ET: frozenset[str] = frozenset("""
+    ma mas mast mata maks da des nud tud v tav vat tuvat nuvat tama
+""".split())
+
+# A genitive personal pronoun before 'läbi viinud' is the subject ('on
+# ta läbi viinud'), not a postposition's complement ('metsa läbi viiv').
+_PERSONAL_PRONOUNS_ET: frozenset[str] = frozenset(
+    {"mina", "sina", "tema", "meie", "teie", "nemad"})
+
+# 'viis' and its forms are also the numeral five: 'Uuring viidi läbi
+# viies riigis', where Vabamorf reads 'viies' as the des form.
+_VIIS_NUMERAL_SURFACES_ET: frozenset[str] = frozenset(
+    {"viis", "viies", "viisid", "viie", "viit"})
+
+# Participles Vabamorf returns as adjectives with the surface as lemma,
+# mapped to the viima form code they stand for.
+_VIIMA_PARTICIPLES_ET: dict[str, str] = {
+    "viidud": "tud", "viinud": "nud", "viiv": "v", "viidav": "tav",
+}
+
+# Joined nouns and participles of 'läbi viima' (EKI õigekirja põhireeglid
+# 2025, reegel 31 and 32 Märkus: läbiviimine ~ läbi viimine, läbiviija ~
+# läbi viija are both correct, so the split spellings count too), mapped
+# to the replacements, synthesised in the original's case.
+_LABI_VIIMA_NOUNS_ET: dict[str, tuple[tuple[str, ...], str, str]] = {
+    "läbiviimine": (("korraldamine", "tegemine"), "S",
+                    "'Läbiviimine' on nimisõnastatud tugiverb. Kasuta "
+                    "tegusõna või jäta sõna ära: 'tööde läbiviimise "
+                    "kvaliteet' → 'tööde kvaliteet', 'konverentsi "
+                    "läbiviimiseks' → 'konverentsi korraldamiseks'. See on "
+                    "stiilisoovitus, mitte viga."),
+    "läbiviija": (("korraldaja",), "S",
+                  "'Läbiviija' asemel sobib korraldaja või konkreetne "
+                  "tegija: koolitaja, küsitleja, uurija. See on "
+                  "stiilisoovitus, mitte viga."),
+    "läbiviidud": (("korraldatud", "tehtud"), "A",
+                   "'Läbiviidud' kuulub tugiverbi 'läbi viima' perre. "
+                   "Sageli sobib 'korraldatud' või 'tehtud', või jäta sõna "
+                   "ära. See on stiilisoovitus, mitte viga."),
+    "läbiviidav": (("korraldatav", "tehtav"), "A",
+                   "'Läbiviidav' kuulub tugiverbi 'läbi viima' perre. "
+                   "Sageli sobib 'korraldatav' või 'tehtav', või jäta sõna "
+                   "ära. See on stiilisoovitus, mitte viga."),
+}
+_LABI_VIIMA_SPLIT_NOUNS_ET: dict[str, str] = {
+    "viimine": "läbiviimine", "viija": "läbiviija",
+}
+
+_LABI_VIIMA_EXPLANATION_ET = (
+    "Tugiverb 'läbi viima' (saksa 'durchführen' tõlkelaen) muudab lause "
+    "kantseliitlikuks. Sageli sobib konkreetne tegusõna: korraldama, tegema "
+    "või pidama (koosolek, seminar). Näiteks 'viidi läbi küsitlus' → "
+    "'korraldati küsitlus'. Kui mõeldakse vastuseisust hoolimata "
+    "saavutamist ('hange viidi protestide kiuste läbi'), sobib 'suruti "
+    "läbi'. See on stiilisoovitus, mitte viga."
+)
+
+# --- 'Küsin täpsemalt, kas …' (_kusin_tapsemalt_issue) -------------------
+# Sentence-initial present 1sg / 1pl 'Küsin/Küsime täpsemalt,' before an
+# indirect question. Bare 'Küsin, kas …' is natural (Sõnaveeb: 'Uudishimust
+# küsin, kui vana te olete?'; 397 sentence-initial hits in EKI Korp
+# SONAVEEB_2023), and so are the other moods and persons (Küsi täpsemalt,
+# küsis täpsemalt), but 'Küsin täpsemalt, kas' has no native hit in about
+# 1.3 billion EKI Korp tokens. Requests in letters use palun + imperative
+# or a wish (Reinsalu, Õiguskeel 2020/1; Haavel, Õiguskeel 2022/2), and a
+# lead-in is softened with the conditional (Kaska 2015), so 'Küsiksin
+# täpsemalt' is left alone. A style hint for letters, not an error.
+
+# Words that open the indirect question after the comma (first lemma).
+_KUSIN_INTERROG_LEMMAS_ET: frozenset[str] = frozenset({
+    "kas", "mis", "milline", "missugune", "kes", "kumb", "kuidas", "millal",
+    "kus", "kuhu", "kust", "miks", "mispärast", "mitu", "palju", "kuivõrd",
+})
+
+# 'kui' opens an indirect question only as a degree word ('kui palju',
+# 'kui kaua'); bare 'kui' is 'if' ('küsin täpsemalt, kui vaja'), and vaja
+# is an adverb too, so the list is closed.
+_KUSIN_KUI_DEGREE_ET: frozenset[str] = frozenset({
+    "palju", "kaua", "kauaks", "suur", "suure", "suured", "suurt", "pikk",
+    "pika", "pikad", "pikka", "kallis", "kalliks", "kiiresti", "kiire",
+    "tihti", "sageli", "kaugel", "kaugele", "vana", "kõrge", "kõrged",
+    "väike", "vähe", "hästi", "suurel", "suures", "mitu",
+})
+
+# A later 1sg / 1pl verb of reporting back ('…, ja annan teada', '…, kui
+# temaga räägin') marks a plan to ask someone else, which is fine. võtma
+# counts only with 'ühendust' (…, ja võtan teiega ühendust), not in
+# '…, ja võtan dokumendid kaasa'.
+_KUSIN_PLAN_VERBS_ET: frozenset[str] = frozenset({
+    "andma", "teatama", "tulema", "vastama", "kirjutama", "helistama",
+    "saatma", "ütlema", "edastama", "informeerima", "rääkima", "teavitama",
+})
+
+# Direct speech opened by a dialogue dash (EKI: a reply may start on its
+# own line with a mõttekriips instead of quotation marks) and a quoted
+# e-mail line ('>'). A hyphen stays flagged: in a letter it is a bullet.
+_KUSIN_SPEECH_LEAD_ET: frozenset[str] = frozenset({"\u2013", "\u2014", ">"})
+
+# 'Küsin täpsemalt, mis juhtus, aga ta vaikib': the person asked reacts
+# in the same sentence, which is narration, not a letter.
+_KUSIN_NARRATION_BUT_ET: frozenset[str] = frozenset({"aga", "kuid", "ent"})
+
+_KUSIN_TAPSEMALT_EXPLANATION_ET = (
+    "'Küsin täpsemalt, kas …' kõlab kirjas võõralt. 'Täpsemalt' eeldab "
+    "varasemat, üldisemat küsimust, ja olevikuline 'küsin' kirjeldab palve "
+    "asemel küsimise tegevust. Kirjas esitatakse täpsustav küsimus palvena "
+    "('Palun täpsustage, kas …') või soovina ('Sooviksin täpsemalt teada, "
+    "kas …'). Kui lause tähendab kavatsust küsida kelleltki teiselt, jäta "
+    "see alles. See on stiilisoovitus, mitte viga."
+)
+
+# Particles that form ühendtegusõnad, which are written apart (EKI
+# õigekirja põhireeglid 2025, reegel 31 Sõnaseletus 2): the verb behind
+# 'läbivaatamine' is 'läbi vaatama', as EKI's own 'Nominaalstiili
+# näiteid' rewrites it.
+_VERB_PARTICLES_ET: frozenset[str] = frozenset("""
+    alla edasi eemale ette järele juurde kaasa kätte kinni kokku kõrvale
+    külge lahku lahti laiali läbi maha mööda peale pähe pihta põhja rikki
+    ringi sassi segi sisse taha tagasi täis üle üles ümber vahele valmis
+    vastu välja ära ühte otsa katki minema tühjaks heaks hukka ellu esile
+    omaks osa aru arvesse kasutusele tähele teoks korda selgeks kindlaks
+    puhtaks teatavaks taga alt eest täide lõpule alal ülal üleval silmas
+    käiku vette kohale kohal korras juures eemal pooleli kaasas tööle
+    üürile aluseks teadmiseks koos
+""".split())
+
+# -mine nouns whose own verb is the kantseliit: offer the plain verb.
+_MINE_VERB_OVERRIDES_ET: dict[str, str] = {
+    "läbiviimine": "korraldama / tegema",
+    "teostamine": "tegema",
+}
+
+# -mine nouns lexicalised as a thing, not an action (EKSS: pakkumine
+# 'ettepanek', teadmised 'omandatud teadmised', kohtumine a meeting).
+# Matched by the lemma or the compound head, so hinnapakkumine and
+# tippkohtumine go too. No verb can replace them, so they stay out of the
+# nominalisation count.
+_MINE_LEXICALISED_ET: frozenset[str] = frozenset(
+    {"teadmine", "pakkumine", "kohtumine", "ettevõtmine"})
+
+# 'vaikimisi' (by default) is an adverb (ÕS, Sõnaveeb) that Vabamorf reads
+# only as the plural partitive of 'vaikimine'. Other -misi adverbs
+# (kiirustamisi, kõhklemisi) have a D reading out of context.
+_MISI_ADVERBS_ET: frozenset[str] = frozenset({"vaikimisi"})
 
 # Subordinating conjunctions + relative pronouns whose pile-up inside ONE
 # sentence is what makes Estonian officialese unreadable. Counted per
@@ -2798,16 +3377,405 @@ def _verb_after(spans: list, i: int) -> bool:
             continue
         if not any(ch.isalnum() for ch in span.text) and not _CLAUSE_MARKS.isdisjoint(span.text):
             # A comma before a coordinator ends a verbless comparison
-            # (tugev nagu karu, aga ...); any other mark cannot tell.
+            # (tugev nagu karu, aga ...), and so does one before a finite
+            # verb, the main clause's after an embedded clause (Laps, kes
+            # jooksis nagu tuul, võitis); any other mark cannot tell.
             return not (span.text == "," and nxt is not None
-                        and nxt.text.lower() in _COORDINATORS | {"aga", "kuid", "vaid"})
+                        and (nxt.text.lower() in _COORDINATORS | {"aga", "kuid", "vaid"}
+                             or _finite_here(nxt)))
         if verb(span):
             return True
     return False
 
 
+def _finite_here(span) -> bool:
+    """The sentence analysis reads `span` as a finite verb."""
+    return any(a.partofspeech == "V" and a.form in _FINITE_FORMS for a in span.annotations)
+
+
+def _lexicon_readings(word: str) -> list[dict]:
+    found = _vabamorf().analyze([word], disambiguate=False, guess=False, propername=False)
+    return found[0].get("analysis") or []
+
+
+@lru_cache(maxsize=4096)
+def _only_verb(word: str) -> bool:
+    """No lexicon reading of `word` is anything but a verb. The sentence
+    analysis can read a noun as a verb (in kelle majas tuli lahti pääses,
+    the noun tuli), and a participle as the verb it comes from. ei counts
+    despite its adverb reading."""
+    if word.lower() == "ei":
+        return True
+    readings = _lexicon_readings(word)
+    return bool(readings) and all(r["partofspeech"] not in _NONVERB_POS for r in readings)
+
+
+@lru_cache(maxsize=4096)
+def _vad_participle_only(word: str) -> bool:
+    """`word` is a 3rd person plural verb in -vad whose only other readings
+    are the -v participle in the plural nominative (soovivad: sooviv)."""
+    if not word.lower().endswith("vad"):
+        return False
+    readings = _lexicon_readings(word)
+    others = [r for r in readings if r["partofspeech"] in _NONVERB_POS]
+    return len(others) < len(readings) and all(
+        r["partofspeech"] == "A" and r["form"] == "pl n" and r["lemma"].endswith("v")
+        for r in others)
+
+
+def _sure_finite(span, nxt) -> bool:
+    """`span` is a finite verb in the sentence and can be nothing else. A
+    -vad verb that is also a participle counts unless a plural nominative
+    follows it, which the participle would qualify (sobivad kingad)."""
+    if not _finite_here(span):
+        return False
+    if _only_verb(span.text):
+        return True
+    return (_vad_participle_only(span.text)
+            and any(a.form == "vad" for a in span.annotations)
+            and not (nxt is not None
+                     and any(a.partofspeech in {"S", "A", "H", "P"} and a.form == "pl n"
+                             for a in nxt.annotations)))
+
+
+def _clause_mark(spans: list, k: int) -> bool:
+    """spans[k] ends a clause: clause punctuation, an HTML tag (<li>,
+    </p>), or a number or abbreviation with its full stop glued on (2013.,
+    6.) that ends the sentence, before a capital or at the end of the
+    text."""
+    t = spans[k].text
+    if t in _CLAUSE_BOUNDARY_MARKS or (t[:1] == "<" and t[-1:] == ">"):
+        return True
+    if len(t) > 1 and t.endswith("."):
+        return k + 1 == len(spans) or spans[k + 1].text[:1].isupper()
+    return False
+
+
+def _line_start(spans: list, k: int, text: str) -> bool:
+    """spans[k] starts a line, so a list item ends before it, or a table
+    cell after a tab."""
+    if k == 0:
+        return False
+    gap = text[spans[k - 1].end:spans[k].start]
+    return "\n" in gap or "\t" in gap
+
+
+def _relative_word(span) -> bool:
+    if span.text.lower() in _RELATIVE_ADVERBS:
+        return True
+    return (any(a.partofspeech == "P" for a in span.annotations)
+            and any(a.lemma in _RELATIVE_LEMMAS for a in span.annotations))
+
+
+def _clause_stop(span) -> bool:
+    return (span.text.lower() in _CLAUSE_SCAN_STOP
+            or any(a.partofspeech == "J" for a in span.annotations)
+            or _relative_word(span))
+
+
+def _persons(span) -> frozenset[str] | None:
+    """The persons the finite verb `span` can be in; None when a reading is
+    not a verb or says nothing about the person (ks, neg, vat, takse)."""
+    out: set[str] = set()
+    for a in span.annotations:
+        persons = _FORM_PERSONS.get(a.form) if a.partofspeech == "V" else None
+        if persons is None:
+            return None
+        out |= persons
+    return frozenset(out) or None
+
+
+def _plain_adverb(span) -> bool:
+    return {a.partofspeech for a in span.annotations} == {"D"}
+
+
+def _olema_complement(spans: list, k: int, last: bool) -> bool:
+    """spans[k] is a -vad verb that is also a participle (sobivad: sobiv),
+    and stands as the participle, the predicative after a form of olema:
+    right after it, unless a verb it would govern follows (kes on siin
+    soovivad osaleda is the verb; kes on sobivad kutsutakse is not), or
+    with one or two plain adverbs between, when it ends the clause (`last`:
+    kes olid väga sobivad,) or a sure verb follows. Before anything else
+    the adverb may be olema's own predicative (kes on rahul soovitavad
+    meid: the main verb)."""
+    if _only_verb(spans[k].text):
+        return False
+    m = k - 1
+    while m >= 0 and k - m < 3 and _plain_adverb(spans[m]):
+        m -= 1
+    if m < 0 or not any(a.partofspeech == "V" and a.lemma == "olema"
+                        for a in spans[m].annotations):
+        return False
+    after = spans[k + 1] if k + 1 < len(spans) else None
+    finite_after = after is not None and _sure_finite(
+        after, spans[k + 2] if k + 2 < len(spans) else None)
+    if m < k - 1:
+        return last or finite_after
+    return finite_after or not (
+        after is not None and any(a.partofspeech == "V" for a in after.annotations))
+
+
+@lru_cache(maxsize=4096)
+def _lexicon_pos(word: str) -> frozenset[str]:
+    """The parts of speech of `word`'s lexicon readings; none when Vabamorf
+    does not know it without guessing (demand, Always)."""
+    return frozenset(r["partofspeech"] for r in _lexicon_readings(word))
+
+
+# The person of a nominative personal pronoun, by lemma and form.
+_PRONOUN_PERSONS: dict[tuple[str, str], str] = {
+    ("mina", "sg n"): "1sg", ("sina", "sg n"): "2sg", ("tema", "sg n"): "3sg",
+    ("mina", "pl n"): "1pl", ("sina", "pl n"): "2pl", ("tema", "pl n"): "3pl",
+}
+
+
+@lru_cache(maxsize=4096)
+def _nominative_person(word: str) -> str | None:
+    """The person `word` stands for as a subject when no lexicon reading
+    of it is anything but a nominative: 3sg for a singular noun (päike,
+    poiss), the pronoun's own for ma, sa, nad, nemad. None for a word that
+    can be in another case (auto, ta, me: an object or an attribute) and
+    for a plural noun, which can be an object (ostsin kingad)."""
+    readings = _lexicon_readings(word)
+    if not readings:
+        return None
+    if all(r["partofspeech"] == "P" for r in readings):
+        persons = {_PRONOUN_PERSONS.get((r["lemma"], r["form"])) for r in readings}
+        return persons.pop() if len(persons) == 1 else None
+    if (all(r["partofspeech"] in {"S", "A"} and r["form"] == "sg n" for r in readings)
+            and any(r["partofspeech"] == "S" for r in readings)):
+        return "3sg"
+    return None
+
+
+def _budgeted(fn, word: str, known: dict):
+    """fn(word), counted against this text's _PUNCT_LOOKUPS; None past them."""
+    key = (fn.__name__, word)
+    if key not in known:
+        if len(known) >= _PUNCT_LOOKUPS:
+            return None
+        known[key] = fn(word)
+    return known[key]
+
+
+def _english_on(spans: list, k: int, known: dict) -> bool:
+    """The on at spans[k] is the English word inside a name (video on
+    demand, add on, Wake on LAN): a word next to it is a lower-case word in
+    plain Latin letters that the lexicon does not know, or a name stands
+    before it and an abbreviation after it. A capitalised unknown word is
+    mostly a name the sentence is about (mille kirjutas Brennick on
+    klassika), so Always on top is still read as olema."""
+    if k == 0 or k + 1 >= len(spans):
+        return False
+    before, after = spans[k - 1].text, spans[k + 1].text
+
+    def pos(word: str) -> frozenset[str] | None:
+        return _budgeted(_lexicon_pos, word, known) if word.isascii() and word.isalpha() else None
+
+    if before.islower() and pos(before) == frozenset():
+        return True
+    if after.islower() and pos(after) == frozenset():
+        return True
+    names = pos(before)
+    return names is not None and names <= {"H", "Y"} and pos(after) == {"Y"}
+
+
+def _fronted_subject(spans: list, pred: int, verb: int, known: dict) -> int | None:
+    """The main clause's subject, when it stands right before its verb at
+    spans[verb] (plain adverbs aside) and right after the clause's last
+    predicate at spans[pred]: Hommikul, kui ärkasin päike juba paistis
+    (päike). Only a word that is a nominative in every lexicon reading, in
+    the main verb's person and in none of the clause verb's, after a verb
+    that takes no predicative (kui olin laps)."""
+    j = verb - 1
+    while j > pred and _plain_adverb(spans[j]):
+        j -= 1
+    m = j - 1
+    while m > pred and _plain_adverb(spans[m]):
+        m -= 1
+    if j <= pred or m != pred:
+        return None
+    clause, main = _persons(spans[pred]), _persons(spans[verb])
+    if not clause or not main or any(a.lemma in _COPULA_LEMMAS for a in spans[pred].annotations):
+        return None
+    person = _budgeted(_nominative_person, spans[j].text, known)
+    return j if person is not None and person in main and person not in clause else None
+
+
+def _closing_comma_issue(spans: list, i: int, text: str, known: dict) -> dict | None:
+    """The clause opened by the word at spans[i], after a comma, runs into
+    the main clause's verb with no comma closing it (Mees, kes seal seisis
+    oli minu isa: `, oli`), or into the main clause's subject right before
+    it (_fronted_subject). Only when the main clause still owes its
+    predicate: no verb back to the previous clause mark or coordinator.
+    The verbs are sure verbs (_sure_finite); the clause may have two joined
+    by ja (seisis ja naeratas), and ei with the verb after it (ei oleks, ei
+    tehtaks, ja ei suudaks) is one. Not a second verb: ei in ei ... ega (ei
+    liha ega kala), ei tea or jumal teab before a question word (käinud ei
+    tea kus), a -vad participle after olema (kes olid sobivad); nor any
+    verb: on in an English name (Wake on LAN). Both scans stop at clause
+    punctuation (the backward one also at a coordinator, the forward one at
+    a line break, a tab, a conjunction or a relative word), so they stay
+    between two commas. `known` holds this text's lexicon lookups."""
+    n = len(spans)
+    k = i - 2
+    while k >= 0 and not _clause_mark(spans, k):
+        if spans[k].text.lower() in _CLAUSE_COORDINATORS:
+            break
+        if any(a.partofspeech == "V" and a.form not in _NONPREDICATE_FORMS
+               for a in spans[k].annotations):
+            return None
+        if _line_start(spans, k, text):
+            break
+        k -= 1
+
+    def end(m: int) -> bool:
+        return _clause_mark(spans, m) or _line_start(spans, m, text)
+
+    def past_ei(m: int) -> int:
+        """Past the word with a verb reading at or after spans[m], the verb
+        an ei before spans[m] negates: the two are one predicate."""
+        while (m < n and not end(m) and not _clause_stop(spans[m])
+               and not any(a.partofspeech == "V" for a in spans[m].annotations)):
+            m += 1
+        return m + 1 if m < n and not end(m) and not _clause_stop(spans[m]) else m
+
+    def ega_pair(k: int) -> int | None:
+        """Where ega stands when the ei at spans[k] pairs two words with it
+        (ei liha ega kala, ei rohkem ega vähem): before any word that can be
+        a verb."""
+        m = k + 1
+        while (m < n and not end(m) and spans[m].text.lower() not in {"ega", "ei"}
+               and not _clause_stop(spans[m])
+               and not any(a.partofspeech == "V" for a in spans[m].annotations)):
+            m += 1
+        return m if m < n and not end(m) and spans[m].text.lower() == "ega" else None
+
+    def question_after(k: int) -> int | None:
+        """Where the question word stands after ei tea or jumal teab at
+        spans[k]."""
+        word = spans[k].text.lower()
+        wh = (k + 2 if word == "ei" and k + 1 < n and spans[k + 1].text.lower() == "tea"
+              else k + 1 if word == "teab" and spans[k - 1].text.lower() == "jumal"
+              else None)
+        if (wh is not None and wh < n and not end(wh)
+                and (_relative_word(spans[wh]) or spans[wh].text.lower() in _INDEFINITE_WH)):
+            return wh
+        return None
+
+    pred = None     # the clause's last predicate
+    k = i + 1
+    while k < n and not end(k):
+        span = spans[k]
+        word = span.text.lower()
+        nxt = spans[k + 1] if k + 1 < n else None
+        if (pred is not None and word in _COORDINATORS and nxt is not None and not end(k + 1)
+                and _sure_finite(nxt, spans[k + 2] if k + 2 < n else None)):
+            # ja + verb: the clause's second predicate, ja ei with its verb too.
+            pred = k + 1
+            k = past_ei(k + 2) if nxt.text.lower() == "ei" else k + 2
+            continue
+        if _clause_stop(span):
+            return None
+        if word == "ei" and pred is None:
+            pred = k
+            k = past_ei(k + 1)
+            continue
+        if _sure_finite(span, nxt) and not (word == "on" and _english_on(spans, k, known)):
+            if pred is None:
+                pred = k
+            elif span.text[:1].isupper():
+                return None     # an unquoted title, or text in capitals
+            elif _olema_complement(spans, k, k + 1 >= n or end(k + 1)):
+                pass            # kes olid sobivad: the participle
+            elif word == "ei" and (m := ega_pair(k)) is not None:
+                k = m           # ei liha ega kala: no predicate
+                continue
+            elif (wh := question_after(k)) is not None:
+                # ei tea kus, jumal teab mis: one indefinite phrase (käinud
+                # ei tea kus). A sure verb after it may be the main clause's
+                # (... ei tea kus ta elab) or the clause's: undecided.
+                m = wh + 1
+                while m < n and not end(m) and not _clause_stop(spans[m]):
+                    if _sure_finite(spans[m], spans[m + 1] if m + 1 < n else None):
+                        return None
+                    m += 1
+                k = wh + 1
+                continue
+            else:
+                j = _fronted_subject(spans, pred, k, known)
+                at = spans[j] if j is not None else span
+                return {
+                    "word": at.text,
+                    "position": at.start,
+                    "rule": "comma-after-subordinate-clause",
+                    "rule_estonian": "koma kõrvallause lõpus",
+                    "suggestion": f", {at.text}",
+                }
+        k += 1
+    return None
+
+
+def _ja_comma_issue(spans: list, i: int, text: str) -> dict | None:
+    """The main clause goes on after the clause opened by kes or mis at
+    spans[i] with ja or ning and no comma before it (EKI õigekirja
+    põhireeglid 2025, reegel 44 märkus 2: the clause's comma stays before
+    ja). Told by person: the clause's verb is 3rd person (kes or mis is its
+    subject), the verb right after ja (plain adverbs may stand between) is
+    in none of its persons and in the main verb's (Juhtisin projekti, mis
+    kestis kaks aastat ja koolitasin: `, ja`)."""
+    n = len(spans)
+    main = None
+    k = i - 2
+    while k >= 0 and not _clause_mark(spans, k):
+        word = spans[k].text.lower()
+        if word in _CLAUSE_COORDINATORS or word in _CLAUSE_OPENERS or _relative_word(spans[k]):
+            break
+        if _sure_finite(spans[k], spans[k + 1]):
+            main = k
+        if _line_start(spans, k, text):
+            break
+        k -= 1
+    main_persons = _persons(spans[main]) if main is not None else None
+    if not main_persons:
+        return None
+
+    def end(m: int) -> bool:
+        return _clause_mark(spans, m) or _line_start(spans, m, text)
+
+    clause_verb = None
+    k = i + 1
+    while k < n and not end(k):
+        span = spans[k]
+        if span.text.lower() in {"ja", "ning"} and clause_verb is not None:
+            m = k + 1
+            while (m < n and not end(m) and spans[m].text.lower() not in _CLAUSE_SCAN_STOP
+                   and {a.partofspeech for a in spans[m].annotations} == {"D"}):
+                m += 1
+            if m < n and not end(m) and _sure_finite(spans[m], spans[m + 1] if m + 1 < n else None):
+                clause_persons = _persons(spans[clause_verb])
+                after = _persons(spans[m])
+                if (clause_persons and after and clause_persons <= _THIRD_PERSONS
+                        and not clause_persons & after and after <= main_persons):
+                    return {
+                        "word": span.text,
+                        "position": span.start,
+                        "rule": "comma-before-ja-after-subordinate-clause",
+                        "rule_estonian": "kõrvallause koma ja ees",
+                        "suggestion": f", {span.text}",
+                    }
+            return None
+        if _clause_stop(span):
+            return None
+        if clause_verb is None and _sure_finite(span, spans[k + 1] if k + 1 < n else None):
+            clause_verb = k
+        k += 1
+    return None
+
+
 def _check_punctuation(text: str) -> dict:
-    """Phase-1 punctuation checker: comma before subordinating words."""
+    """Comma before subordinating words, and the comma closing a clause
+    that opens after a comma (before the main verb, or before ja)."""
     _check_text(text)
     Text = _Text()
     t = Text(text)
@@ -2816,11 +3784,26 @@ def _check_punctuation(text: str) -> dict:
 
     issues: list[dict] = []
     skip_prev = {",", ";", ":", "(", "[", "\u2014", "\u2013", "-", ".", "!", "?", "...", "…"}
+    et_in_sentence = False
+    known: dict = {}
     for i, span in enumerate(spans):
         word_lower = span.text.lower()
-        if word_lower not in _COMMA_BEFORE:
-            continue
-        if i == 0:
+        if (i and spans[i - 1].text == ","
+                and (word_lower in _CLAUSE_OPENERS or _relative_word(span))
+                and not (i + 1 < len(spans) and spans[i + 1].text.lower() == "tahes")):
+            found = _closing_comma_issue(spans, i, text, known)
+            if found is None and word_lower in {"kes", "mis"}:
+                found = _ja_comma_issue(spans, i, text)
+            if found is not None:
+                issues.append(found)
+        if span.text in _SENTENCE_END_MARKS:
+            et_in_sentence = False
+        coordinated = False
+        if word_lower == "et":
+            after = spans[i - 1].text.lower() if i else ""
+            coordinated = after in _ET_COORDINATORS or (after == "või" and et_in_sentence)
+            et_in_sentence = True
+        if word_lower not in _COMMA_BEFORE or i == 0 or coordinated:
             continue
         prev = spans[i - 1]
         if prev.text in skip_prev:
@@ -2853,6 +3836,7 @@ def _check_punctuation(text: str) -> dict:
             "rule_estonian": "koma alistava sidesõna ees",
             "suggestion": f", {word}",
         })
+    issues.sort(key=lambda issue: issue["position"])
 
     return {
         "issues": issues,
@@ -2871,12 +3855,32 @@ def _check_punctuation(text: str) -> dict:
 ))
 @_counted
 def check_punctuation(text: Annotated[str, Field(description="Estonian text.")]) -> _CheckResult:
-    """Flags a missing comma before et, kuna, sest, kuigi, kuid, vaid, nagu,
-    mistõttu, millepärast or kuhu. A comma before a pair (nii et, ilma et)
-    passes, and nagu is flagged only before a clause with a verb.
+    """Flags a missing comma:
+    - `comma-before-clause-conjunction`: before et, kuna, sest, kuigi,
+      kuid, vaid, nagu, mistõttu, millepärast or kuhu. A comma before a
+      pair (nii et, ilma et) passes, as does et after ja, ning, ega or ehk;
+      nagu is flagged only before a clause with a verb.
+    - `comma-after-subordinate-clause`: closing a clause opened after a
+      comma by a relative word (kes, mis, kus) or a subordinator (et, kui,
+      kas), before the main clause's verb: Mees, kes seal seisis oli minu
+      isa → `, oli`; before its subject instead when that stands right
+      before the verb and cannot be the clause's own (Hommikul, kui
+      ärkasin päike juba paistis → `, päike`). Otherwise that is where the
+      comma goes at the latest; it may belong earlier, before a longer
+      fronted subject or inside a split phrase.
+    - `comma-before-ja-after-subordinate-clause`: before ja or ning when
+      the main clause goes on after a kes or mis clause, told by the
+      verbs' person: Juhtisin projekti, mis kestis kaks aastat ja
+      koolitasin → `, ja`.
 
-    Not checked: kui, mis, kes (their comma depends on meaning), list and
-    apposition commas, dashes, colons.
+    The last two read only words that cannot be anything but a verb, so a
+    verb that is also a noun (tuli, sai, lõppes) is missed; ei in ei ...
+    ega and in ei tea kus, a -vad participle after olema (kes olid
+    sobivad) and on in an English name (video on demand) are not counted.
+    A line break, a table cell edge (| or a tab), an HTML tag, an arrow or
+    a quotation mark ends the clause. Not checked: the comma before kui,
+    mis or kes (it depends on meaning), list and apposition commas,
+    dashes, colons.
     """
     return _check_punctuation(text)
 
@@ -2986,6 +3990,205 @@ _NUM_SECTION_RE = re.compile(
 
 _NUM_LOOKUPS = 128
 
+# A tilde used as "about" before a number (~50 inimest). EKI (Arvukirjutus,
+# p 11) writes a rounded number with u (no period) or ligikaudu, and keeps
+# the tilde for parallel variants in linguistic text (mina ~ ma), always
+# spaced. So a glued ~50 is flagged anywhere it is not code; a spaced ~ 50
+# only where no word stands before it (after a colon, comma or bracket, or
+# opening a list item), because "aastal ~ 2005. a" is EKI's own variant
+# notation. Skipped: anything glued on the left (HEAD~1, 5~10, ~~, /~50),
+# a digit or operator before it (5 ~10, = ~10), a period or comma part
+# after the number (~3.11, ~1.5 and ~1,250 are left to the version and
+# separator rules), a closing tilde later on the line (~2~ subscript,
+# ~50 €~ strikethrough), and code (see _NumCode). A * or + opening a line
+# is a list bullet, not an operator, so "* ~10 minutit" is flagged like
+# "- ~10 minutit". Not flagged: ≈, a mathematical sign (π ≈ 3,14).
+_NUM_TILDE_RE = re.compile(r"~([ \u00a0]?)(\d+(?:[ \u00a0]\d{3}(?!\d))*(?:,\d{1,2}(?!\d))?)")
+_NUM_FENCE_RE = re.compile(r"^ {0,3}(?:```|~~~)", re.M)
+_NUM_TILDE_CLOSE_RE = re.compile(r"[^\s(\[~]~")
+_NUM_TILDE_AFTER_NUMBER_RE = re.compile(r"[.,]\d")
+_NUM_TILDE_OPERATORS = "=<>+*/&^%"
+_NUM_TILDE_SPACED_AFTER = ":,([|"
+_NUM_TILDE_LINE_MARKS = " \t-*+•>#|"
+_NUM_TILDE_BULLET_RE = re.compile(r"[ \t]*[*+][ \t]+\Z")
+
+# Code is not prose. The tilde, month.year and range rules skip inline code
+# spans and fenced blocks. A span opens on a run of backticks and closes
+# on the next run of the same length on its line (CommonMark), so `` ~5 ``
+# is code too; a fenced block runs from one fence line to the next. Only
+# the tilde also skips indented code blocks: lines indented four spaces or
+# a tab after a blank line or the text start, outside a list (CommonMark).
+# A tilde there is shell or git (ls ~1, HEAD~2) far more often than prose,
+# while an indented 2015 - 2019 is often a dated list line. The cost: a
+# plain-text paragraph indented that way gets no tilde hint.
+_NUM_TICK_RUN_RE = re.compile(r"`+")
+_NUM_LIST_ITEM_RE = re.compile(r"[ \t]*(?:[-*+•]|\d+[.)])[ \t]")
+
+
+class _NumCode:
+    """Where a text has code, indexed on first use: a text with no
+    candidate pays nothing, and each lookup is a bisect."""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    @cached_property
+    def newlines(self) -> list[int]:
+        return [m.start() for m in re.finditer("\n", self._text)]
+
+    @cached_property
+    def _spans(self) -> tuple[list[int], list[int], list[int]]:
+        """Inline code spans as parallel lists of content starts and ends,
+        and the fence line starts."""
+        text, newlines = self._text, self.newlines
+        runs = [(r.start(), r.end()) for r in _NUM_TICK_RUN_RE.finditer(text)]
+        by_len: dict[int, list[int]] = {}
+        for j, (s, e) in enumerate(runs):
+            by_len.setdefault(e - s, []).append(j)
+        starts: list[int] = []
+        ends: list[int] = []
+        j = 0
+        while j < len(runs):
+            s, e = runs[j]
+            same = by_len[e - s]
+            n = bisect.bisect_right(same, j)
+            if n < len(same):
+                close = runs[same[n]][0]
+                if bisect.bisect_left(newlines, e) == bisect.bisect_left(newlines, close):
+                    starts.append(e)
+                    ends.append(close)
+                    j = same[n] + 1
+                    continue
+            j += 1
+        return starts, ends, [f.start() for f in _NUM_FENCE_RE.finditer(text)]
+
+    def __contains__(self, i: int) -> bool:
+        """Whether position `i` is in an inline code span or fenced block."""
+        starts, ends, fences = self._spans
+        k = bisect.bisect_right(starts, i) - 1
+        return (k >= 0 and i < ends[k]) or bisect.bisect_left(fences, i) % 2 == 1
+
+    @cached_property
+    def indented(self) -> set[int]:
+        """Line numbers (from 0) of the lines in indented code blocks."""
+        code: set[int] = set()
+        blank, block, listed = True, False, False
+        for n, line in enumerate(self._text.split("\n")):
+            if not line.strip():
+                blank = True
+                continue
+            if line[:4].expandtabs(4).startswith("    "):
+                if block or (blank and not listed):
+                    code.add(n)
+                    block = True
+            else:
+                block = False
+                if _NUM_LIST_ITEM_RE.match(line):
+                    listed = True
+                elif blank:
+                    listed = False
+            blank = False
+        return code
+
+
+# A month and year in digits (09.2016) is a date, not a decimal. EKI
+# (Arvukirjutus p 33) finds the month in words clearer: "tööde lõpp: sept
+# 2016 (mitte: tööde lõpp: 09.2016)". A two-digit month gets that hint,
+# with Sõnaveeb's month abbreviation so no case ending is needed (alates
+# sept 2016); march to july have none. A one-digit month (1.2050) could be
+# an exchange rate, so it is only kept out of the decimal rule. A unit,
+# currency or math sign next to the number still makes it a decimal.
+# 10, 11 and 12 have no leading zero to mark a month, and a SEK or NOK
+# rate (11.2050), a coefficient, a mean or a coordinate has their shape. A
+# rate word or a currency pair (EUR/SEK) earlier in the clause makes one a
+# decimal again, unless a date word stands next to it (keskmine palk
+# seisuga 10.2023). A date cue is not required instead: most months stand
+# with none (kursus algab 10.2027), and reading those as decimals would
+# turn a date into 10,2027, while a rate nearly always names what it is.
+# A comma does not end the clause here, so a list of rates shares its word
+# (koefitsiendid olid 0.2019, 10.2019 ja 11.1998).
+_NUM_MONTH_ABBR = ("jaan", "veebr", "märts", "apr", "mai", "juuni", "juuli",
+                   "aug", "sept", "okt", "nov", "dets")
+_NUM_MONTH_RATE_RE = re.compile(
+    r"\w*(?:kurs(?:s|si|i|il|ile|ilt|iga|ist)|koefitsien\w*|kordaja\w*|keskmi\w*"
+    r"|mediaan\w*|kraad\w*)", re.I)
+_NUM_MONTH_DATE_RE = re.compile(r"seisuga|alates|kuni|enne|pärast|tähtaeg\w*|kuupäev\w*", re.I)
+_NUM_CURRENCY_PAIR_RE = re.compile(r"\b[A-Z]{3}/[A-Z]{3}\b")
+_NUM_CLAUSE_END_RE = re.compile(r"[.!?;][\"'”»)\]]*\s|\n")
+_NUM_LETTERS_RE = re.compile(r"[^\W\d_]+")
+_NUM_MATH_BEFORE_RE = re.compile(r"[=<>≈±][^\S\n]*\Z")
+
+# A spaced hyphen between two numbers that make a range (2020 - 2024, 5 - 10
+# päeva, 10.00 - 12.00). EKI writes a range unspaced when neither end
+# contains a space (teatmik "Tühikud", Arvukirjutus pp 35-38), with a
+# mõttekriips; a hyphen stands for "ja" between consecutive numbers. The
+# suggestion only removes the spaces and keeps a plain hyphen. Only the
+# keyboard hyphen is matched. Not ranges, and skipped: subtraction and
+# chains (10 - 5 = 5), an expression after = (vanus = 1990 - 2024), code,
+# scores (3 - 1: EKI writes 3 : 1; a sports word such as geim or poolaeg
+# anywhere in the clause, other score words among the last three),
+# phone numbers, digit groups (9000 - 10 000 may stay spaced), ordinal and
+# season ranges (2015 - 2019. aastal, õppeaasta 2025 - 2026), descending
+# pairs, month names after the range (5 - 10 mai), and month.year ends (EKI
+# wants the months in words there, spaced: aprill 2008 - august 2009).
+# Bare integers need a cue: a unit, a page or paragraph word, kell, a glued
+# compound (18 - 25-aastased) or a partitive noun after them (5 - 10
+# päeva). A singular label noun before the left number with a unit or noun
+# after the right one is a label and its value, the hyphen typed for EKI's
+# spaced mõttekriips (ülesanne 1 - 10 punkti, pakett 2 - 40 eurot), not a
+# range; plural labels (peatükid 3 - 5) stay ranges. Only the last three
+# words are read for most score words, as tulemus, mäng or lõpp a clause
+# back is as often prose (uuringu tulemuste põhjal kestab ravi 5 - 10 päeva).
+_NUM_RANGE_EP = r"\d{1,4}(?:[.,]\d{1,4}){0,2}"
+_NUM_RANGE_SPACED_RE = re.compile(
+    r"(?<![\w.,/:+\-\u2013\u2212±€$£#~])"
+    rf"({_NUM_RANGE_EP})"
+    r"([^\S\n]+-[^\S\n]+|-[^\S\n]+)"
+    rf"({_NUM_RANGE_EP})"
+    r"(?![\d.,]?\d)")
+_NUM_RANGE_CHAIN_BEFORE_RE = re.compile(
+    r"\d[^\S\n]*(?:[-\u2013\u2212+×*/=]|[^\S\n]:)[^\S\n]*\Z|\d[^\S\n]+\Z|=[^\S\n]*\Z")
+_NUM_RANGE_AFTER_BAD_RE = re.compile(
+    r"[^\S\n]+\d"
+    r"|[^\S\n]*(?:=|[+×*/<>≤≥]|[-\u2013\u2212][^\S\n]*\d|[^\S\n]:[^\S\n]*\d)"
+    r"|\.[^\S\n]+[a-zõäöüšž]"
+    r"|[^\S\n]*%[^\S\n]*[-\u2013]"
+    r"|\.[^\W\d_]"
+    r"|\.[^\S\n]+[IVX]+\b")
+_NUM_RANGE_PHONE_RE = re.compile(
+    r"(?:tel|telefon|mob|mobiil|gsm|faks|fax|helista|kontakt|kood|isikukood"
+    r"|registrikood|isbn|issn|konto|arveldusarve)\w*\.?:?", re.I)
+_NUM_RANGE_CUE_RE = re.compile(
+    r"(?:lk|lehek\w*|pp|p|punkt\w*|§|lg|lõi[gk]\w*|ptk|peatük\w*|kell|kella\w*|kl"
+    r"|aastatel|aastail|vanuses|vahemikus|ajavahemikus|perioodil)\.?", re.I)
+_NUM_RANGE_SCORE_RE = re.compile(
+    r"(?:seis|skoor|tulemus|võit|kaot|viik|viigi|mäng|kohtumi|matš|poolaj|alist"
+    r"|lõpp|lõppe|finaal|geim|sett)\w*", re.I)
+_NUM_RANGE_SCORE_CLAUSE_RE = re.compile(
+    r"(?:skoor|viik|viigi|matš|poolaj|alist|finaal|geim|sett)\w*", re.I)
+_NUM_RANGE_CLAUSE_CUT_RE = re.compile(r"[.!?;,][\"'”»)\]]*[^\S\n]")
+_NUM_RANGE_LABEL_RE = re.compile(
+    r"ülesanne|küsimus|pakett|variant|rühm|klass|tuba|ruum|korrus|osa|episood"
+    r"|joonis|tabel|samm|etapp|voor|peatükk", re.I)
+_NUM_RANGE_YEAR_WORD_RE = re.compile(
+    r"(?:õppe|majandus|eelarve|hooaja|kalendri)?aasta\w*|hooa[ej]\w*|õa|a", re.I)
+_NUM_RANGE_SEASON_BEFORE_RE = re.compile(
+    r"\w*hooa[ej]\w*|\w*õppeaasta\w*|\w*majandusaasta\w*", re.I)
+_NUM_RANGE_MONTHS = ("jaan", "veebr", "märts", "apr", "mai", "juun", "juul",
+                     "aug", "sept", "okt", "nov", "dets")
+_NUM_RANGE_NEXT_WORD_RE = re.compile(r"[^\S\n]*([^\W\d_]+)")
+
+# A derivational suffix on the per cent sign. EKI (Arvukirjutus p 30):
+# "protsendimärgiga, millele tuletusliiteid ei lisata": 20% hinnaalandus or
+# 20-protsendiline hinnaalandus, never 20%-line. Case endings stay
+# (10%-st, 5%-ni, 3%-le); none of them starts with li, ne or se. No form
+# of -line starts with lisa, so a noun (5%-lisa, 10%-lisatasu) is no
+# suffix. The number starts after a non-digit: a match tried inside a long
+# digit run would rescan the rest of it, quadratic in the run's length.
+_NUM_PERCENT_SUFFIX_RE = re.compile(
+    r"(?<!\d)(\d+(?:,\d+)?)[^\S\n]?%-?(li(?:ne|s(?!a)[a-zõäöü]*|st)|ne|se[a-zõäöü]*)"
+    r"(?![a-zõäöüšž])")
+
 
 def _number_word_known(word: str, known: dict[str, bool]) -> bool:
     """Whether Vabamorf's lexicon knows `word`, without guessing: Tartus
@@ -3078,8 +4281,217 @@ def _decimal_skipped(text: str, cands: list[re.Match], i: int, known: dict[str, 
             and not _number_word_known(word, known)))
 
 
+def _tilde_issues(text: str, code: _NumCode) -> list[dict]:
+    """approximate-tilde issues: a tilde meaning "about" before a number.
+    Line ends, code and closing tildes are indexed once, so a long single
+    line costs no more than many short ones."""
+    issues: list[dict] = []
+    matches = list(_NUM_TILDE_RE.finditer(text))
+    if not matches:
+        return issues
+    newlines = code.newlines
+    closers = [c.end() - 1 for c in _NUM_TILDE_CLOSE_RE.finditer(text)]
+    for m in matches:
+        i, end = m.span()
+        line = bisect.bisect_left(newlines, i)
+        ls = newlines[line - 1] + 1 if line else 0
+        le = newlines[line] if line < len(newlines) else len(text)
+        window = text[max(ls, i - 40):i]
+        prev = window[-1:]
+        prev_ns = window.rstrip()[-1:]
+        if prev and not prev.isspace() and prev not in "([":
+            continue
+        bullet = i - ls <= 40 and _NUM_TILDE_BULLET_RE.match(text, ls, i) is not None
+        if prev_ns.isdigit() or (prev_ns and prev_ns in _NUM_TILDE_OPERATORS and not bullet):
+            continue
+        if m.group(1):
+            opens_line = i - ls <= 40 and window.strip(_NUM_TILDE_LINE_MARKS) == ""
+            prev_ls = newlines[line - 2] + 1 if line >= 2 else 0
+            prev_blank = ls == 0 or text[prev_ls:ls - 1].strip() == ""
+            marked = any(ch in window for ch in "-*+•>#|")
+            if not ((prev_ns and prev_ns in _NUM_TILDE_SPACED_AFTER)
+                    or (opens_line and (prev_blank or marked))):
+                continue
+        if _NUM_TILDE_AFTER_NUMBER_RE.match(text, end):
+            continue
+        if text.startswith("~", end):
+            continue
+        k = bisect.bisect_right(closers, end)
+        if k < len(closers) and closers[k] < le:
+            continue
+        if i in code or line in code.indented:
+            continue
+        start = bullet or _NUM_SENTENCE_START_RE.search(text, max(0, i - 20), i)
+        issues.append({
+            "text": m.group(0),
+            "position": i,
+            "rule": "approximate-tilde",
+            "rule_estonian": "umbkaudne arv",
+            "suggestion": ("Umbes " if start else "u ") + m.group(2),
+        })
+    return issues
+
+
+def _month_year(text: str, cands: list[re.Match], i: int) -> str | None:
+    """'' when candidate `i` is a month and year with a one-digit month, the
+    hint ('sept 2016') when the month has two digits, None when it is no
+    month and year: a unit, currency or math sign makes it a number, and so
+    does a rate word before a 10 to 12 (kurss 11.2050)."""
+    m = cands[i]
+    whole, frac = m.groups()
+    if not (len(whole) <= 2 and 1 <= int(whole) <= 12 and len(frac) == 4
+            and 1900 <= int(frac) <= 2099):
+        return None
+    start, end = m.span()
+    if _NUM_MATH_BEFORE_RE.search(text, max(0, start - 4), start):
+        return None
+    left = cands[i - 1] if i and _NUM_RANGE_GAP_RE.fullmatch(text, cands[i - 1].end(), start) else None
+    right = (cands[i + 1] if i + 1 < len(cands)
+             and _NUM_RANGE_GAP_RE.fullmatch(text, end, cands[i + 1].start()) else None)
+    if any(_NUM_UNIT_RE.match(text, c.end())
+           or _NUM_CURRENCY_RE.search(text, max(0, c.start() - 5), c.start())
+           for c in (left, m, right) if c):
+        return None
+    if len(whole) == 1:
+        return ""
+    if whole[0] == "1" and _month_is_rate(text, start, end):
+        return None
+    return f"{_NUM_MONTH_ABBR[int(whole) - 1]} {frac}"
+
+
+def _month_is_rate(text: str, start: int, end: int) -> bool:
+    """Whether a 10.yyyy to 12.yyyy at start:end is a rate or a measure: a
+    rate word or a currency pair earlier in its clause and no date word
+    next to it. Reads at most 60 characters back and 40 ahead."""
+    window = text[max(0, start - 60):start]
+    cuts = [c.end() for c in _NUM_CLAUSE_END_RE.finditer(window)]
+    if cuts:
+        window = window[cuts[-1]:]
+    words = _NUM_LETTERS_RE.findall(window)[-6:]
+    nxt = _NUM_RANGE_NEXT_WORD_RE.match(text, end, min(len(text), end + 40))
+    if ((words and _NUM_MONTH_DATE_RE.fullmatch(words[-1]))
+            or (nxt and _NUM_MONTH_DATE_RE.fullmatch(nxt.group(1)))):
+        return False
+    return (_NUM_CURRENCY_PAIR_RE.search(window) is not None
+            or any(_NUM_MONTH_RATE_RE.fullmatch(w) for w in words))
+
+
+def _range_kinds(ep: str) -> dict:
+    """What a range end can be (year, date, time, ...), each with a key
+    that orders it, so a pair is a range only when it ascends."""
+    kinds: dict = {}
+    if "," in ep:
+        if ep.count(",") == 1 and "." not in ep:
+            a, b = ep.split(",")
+            kinds["comma"] = float(f"{a}.{b}")
+        return kinds
+    parts = ep.split(".")
+    if len(parts) == 1:
+        kinds["int"] = int(ep)
+        if len(ep) == 4 and 1000 <= int(ep) <= 2099:
+            kinds["year"] = int(ep)
+    elif len(parts) == 2:
+        a, b = parts
+        if len(a) <= 2 and len(b) == 2 and int(a) <= 24 and int(b) <= 59:
+            kinds["time"] = int(a) * 60 + int(b)
+        if len(a) <= 2 and len(b) <= 2 and 1 <= int(a) <= 31 and 1 <= int(b) <= 12:
+            kinds["daymonth"] = (int(b), int(a))
+        if len(a) <= 2 and len(b) == 4 and 1 <= int(a) <= 12 and 1900 <= int(b) <= 2099:
+            kinds["monthyear"] = (int(b), int(a))
+    elif len(parts) == 3:
+        d, mo, y = parts
+        if len(d) <= 2 and len(mo) <= 2 and len(y) == 4 and 1 <= int(d) <= 31 and 1 <= int(mo) <= 12:
+            kinds["date"] = (int(y), int(mo), int(d))
+    return kinds
+
+
+def _range_partitive(word: str, known: dict[str, bool]) -> bool:
+    """Whether some lexicon reading of `word` is a partitive noun or
+    adjective (päeva, inimest), the noun a bare range counts. `known` holds
+    this text's lookups; past _NUM_LOOKUPS the answer is no, so nothing
+    more is flagged."""
+    if word not in known:
+        if len(known) >= _NUM_LOOKUPS:
+            return False
+        try:
+            found = _vabamorf().analyze(
+                words=[word], guess=False, propername=False, disambiguate=False)
+            known[word] = any(a["partofspeech"] in ("S", "A") and a["form"] == "sg p"
+                              for w in found for a in w["analysis"])
+        except Exception:
+            known[word] = False
+    return known[word]
+
+
+def _range_spacing_issues(text: str, taken: set[int], code: _NumCode) -> list[dict]:
+    """range-spacing issues; `taken` holds every character position an
+    earlier rule has already flagged."""
+    issues: list[dict] = []
+    known: dict[str, bool] = {}
+    for m in _NUM_RANGE_SPACED_RE.finditer(text):
+        left, _gap, right = m.groups()
+        ls, rs, end = m.start(1), m.start(3), m.end()
+        if ls in taken or rs in taken:
+            continue
+        if _NUM_RANGE_CHAIN_BEFORE_RE.search(text, max(0, ls - 40), ls):
+            continue
+        if _NUM_RANGE_AFTER_BAD_RE.match(text, end):
+            continue
+        if ls in code:
+            continue
+        nl = text.rfind("\n", max(0, ls - 60), ls)
+        window = text[max(nl + 1, ls - 60):ls]
+        before = [_NUM_CASE_END_RE.sub("", w.strip(_NUM_OPENERS).rstrip(":"))
+                  for w in window.split()][-3:]
+        before = [w for w in before if w]
+        if any(_NUM_RANGE_PHONE_RE.fullmatch(w) for w in before):
+            continue
+        lk, rk = _range_kinds(left), _range_kinds(right)
+        rising = [k for k in ("date", "monthyear", "time", "daymonth", "year", "comma", "int")
+                  if k in lk and k in rk and lk[k] < rk[k]]
+        if not rising or "monthyear" in rising:
+            continue
+        nxt = _NUM_RANGE_NEXT_WORD_RE.match(text, end)
+        next_word = nxt.group(1) if nxt else ""
+        if set(rising) & {"date", "time", "daymonth"}:
+            ok = True
+        elif "year" in rising:
+            ok = not ((next_word and _NUM_RANGE_YEAR_WORD_RE.fullmatch(next_word))
+                      or (before and _NUM_RANGE_SEASON_BEFORE_RE.fullmatch(before[-1])))
+        else:
+            if any(_NUM_RANGE_SCORE_RE.fullmatch(w) for w in before):
+                continue
+            # The clause: back to a sentence end, or a comma or semicolon
+            # and a space (1,5 has none).
+            cut = max((c.end() for c in _NUM_RANGE_CLAUSE_CUT_RE.finditer(window)), default=0)
+            if any(_NUM_RANGE_SCORE_CLAUSE_RE.fullmatch(w)
+                   for w in _NUM_LETTERS_RE.findall(window, cut)):
+                continue
+            cue = bool(before) and _NUM_RANGE_CUE_RE.fullmatch(before[-1]) is not None
+            unit = _NUM_UNIT_RE.match(text, end) is not None
+            compound = re.match(r"-[^\W\d_]", text[end:end + 2]) is not None
+            noun = (bool(next_word) and text[end:end + 1].isspace()
+                    and not next_word.lower().startswith(_NUM_RANGE_MONTHS)
+                    and _range_partitive(next_word, known))
+            if (left.isdigit() and (unit or noun) and before
+                    and _NUM_RANGE_LABEL_RE.fullmatch(before[-1])):
+                continue
+            lone_year = "year" in rk and "year" not in lk
+            ok = unit or compound or noun or (cue and not lone_year)
+        if ok:
+            issues.append({
+                "text": m.group(0),
+                "position": m.start(),
+                "rule": "range-spacing",
+                "rule_estonian": "tühikud vahemiku kriipsu ümber",
+                "suggestion": f"{left}-{right}",
+            })
+    return issues
+
+
 def _check_numbers(text: str) -> dict:
-    """Number-writing checker: separator rules only."""
+    """Number-writing checker: separators, month and year, ranges, the per
+    cent sign and the approximation tilde."""
     _check_text(text)
     issues: list[dict] = []
 
@@ -3108,9 +4520,22 @@ def _check_numbers(text: str) -> dict:
 
     cands = list(_NUM_DECIMAL_RE.finditer(text))
     known: dict[str, bool] = {}
+    code = _NumCode(text)
     for i, m in enumerate(cands):
         # 000.50 of 1,500,000.50 is part of the thousands issue.
         if m.end() in with_decimals or _decimal_skipped(text, cands, i, known):
+            continue
+        month = _month_year(text, cands, i)
+        if month is not None:
+            # A month and year in code (`04.2017`) is program output.
+            if month and m.start() not in code:
+                issues.append({
+                    "text": m.group(0),
+                    "position": m.start(),
+                    "rule": "month-year-digits",
+                    "rule_estonian": "kuu sõnaga",
+                    "suggestion": month,
+                })
             continue
         issues.append({
             "text": m.group(0),
@@ -3120,6 +4545,19 @@ def _check_numbers(text: str) -> dict:
             "suggestion": f"{m.group(1)},{m.group(2)}",
         })
 
+    for m in _NUM_PERCENT_SUFFIX_RE.finditer(text):
+        number, suffix = m.groups()
+        issues.append({
+            "text": m.group(0),
+            "position": m.start(),
+            "rule": "percent-sign-suffix",
+            "rule_estonian": "protsendimärk ilma liiteta",
+            "suggestion": f"{number}% / {number}-protsendi{suffix}",
+        })
+
+    issues.extend(_tilde_issues(text, code))
+    taken = {k for d in issues for k in range(d["position"], d["position"] + len(d["text"]))}
+    issues.extend(_range_spacing_issues(text, taken, code))
     issues.sort(key=lambda d: d["position"])
     return {
         "issues": issues,
@@ -3138,12 +4576,31 @@ def _check_numbers(text: str) -> dict:
 ))
 @_counted
 def check_numbers(text: Annotated[str, Field(description="Estonian text.")]) -> _CheckResult:
-    """Flags English-style number separators (numbrite õigekirjutus):
+    """Flags number-writing slips (numbrite õigekirjutus):
     - `decimal-separator`: 3.14 → 3,14; skips kell 10.30, 14.05, punkt
       3.2, Python 3.12, but flags a bare 10.30.
     - `thousands-separator`: 1,250 → 1250, 1,500,000 → 1 500 000 (EKI
       groups from five digits; ideally non-breaking spaces, `suggestion`
       has plain ones). If 1,250 was meant as the decimal 1,25, keep it.
+    - `approximate-tilde`: ~50 → u 50 (Umbes 50 at a sentence start; umbes
+      and ligikaudu also fit). A style hint for general prose: EKI keeps
+      the tilde for variants (mina ~ ma), so a spaced tilde after a word,
+      ≈, code (inline, fenced or indented), paths, versions and ranges
+      (5~10) are not flagged.
+    - `month-year-digits`: 09.2016 → sept 2016, a date rather than a
+      decimal; EKI finds the month in words clearer. A one-digit month
+      (1.2019) is left alone, as it may be a rate, and 10 to 12 after a
+      rate word or currency pair in the clause (kurss 11.2050, EUR/SEK,
+      keskmine, koefitsient) is a decimal. Inflect a full month name to
+      fit the sentence (alates märtsist 2019); abbreviations need no ending.
+    - `range-spacing`: 2020 - 2024 → 2020-2024, 5 - 10 päeva → 5-10. Only
+      a spaced keyboard hyphen between plain numbers; typeset EKI text uses
+      the mõttekriips, also unspaced. Skips sums and expressions after =,
+      scores, code, phone numbers, a label and its value (ülesanne 1 - 10
+      punkti), ends containing a space (9000 - 10 000), ordinal and season
+      ranges (2015.-2019. aastal, 2019/2020), and month.year ends.
+    - `percent-sign-suffix`: 20%-line → 20% or 20-protsendiline; case
+      endings (10%-st, 5%-ni) are fine.
 
     Spelling out small numbers is not checked.
     """
@@ -3867,22 +5324,84 @@ def check_domain_terms(
     return _check_domain_terms(text, glossary, suggest_cutoff)
 
 
+# HCl, KCl, NH4Cl, CH3Cl: Vabamorf reads a chloride formula as a capital
+# stem and the adessive l (HC + l), but the l is the l of Cl. Every capital
+# in the stem is a one-letter element symbol and the last is C. With a
+# digit in the stem that is a formula; without one only the common
+# formulas are, so BBCl and PCl (BBC-l, PC-l) are still flagged.
+_CHLORIDE_STEM = re.compile(r"(?:[BCFHIKNOPSUVWY]\d*)*C")
+_CHLORIDE_PLAIN_STEMS = frozenset({"HC", "KC", "IC", "OC", "HOC", "NOC"})
+# I to XXXIX: the Roman ordinals of centuries, classes, floors and stages.
+# CD, MM, DC and the like are kept out: they are far more often abbreviations.
+_ROMAN_IVX = re.compile(r"(?=[IVX])X{0,3}(?:IX|IV|V?I{0,3})")
+# Letters whose Estonian name ends in a consonant: eff, ell, emm, enn,
+# err, ess, iks, zett. J and Y are left out: DJ is read dii-džei (EKI) and
+# a capital word ending in Y is mostly English (SONY, SKY).
+_CONSONANT_NAMED = frozenset("FLMNRSXZ")
+# Out-of-context lookups one check_abbreviation_hyphenation call may make.
+# Only the word after a Roman ordinal with an l-ending is looked up, and
+# only when disambiguation kept no noun reading in its case (XIIl korral:
+# korral comes out as the postposition), so real text needs a handful;
+# past the budget the numeral keeps its hyphenated ending.
+_ABBR_LOOKUPS = 64
+
+
+@lru_cache(maxsize=4096)
+def _abbr_noun_forms(word: str) -> frozenset[str]:
+    """The forms of every out-of-context noun or adjective reading of `word`."""
+    try:
+        found = _vabamorf().analyze(words=[word], disambiguate=False)
+    except Exception:
+        return frozenset()
+    return frozenset(a["form"] for a in (found[0].get("analysis") or [])
+                     if a["partofspeech"] in ("S", "A"))
+
+
 def _check_abbreviation_hyphenation(text: str) -> dict:
     """Heuristic Estonian abbreviation-case-ending hyphenation checker.
 
-    Per EKI Reeglid: case endings on Latin-letter / all-caps abbreviations
-    are separated from the stem by a hyphen (`MCP-st` not `MCPst`,
-    `API-ga` not `APIga`). Uses Vabamorf's POS + form analysis to
-    identify tokens Vabamorf recognised as abbreviations carrying a
-    case ending, then flags any that aren't already hyphenated.
+    EKI (teatmik, "Lühendite ja tähiste käänamine") lets an all-capital
+    abbreviation take its case ending with or without a hyphen: EL-i and
+    ELi, OÜ-sid and OÜsid, AS-idel and ASidel are all correct. The one
+    place it prefers the hyphen is an ending that starts with l, which
+    reads into the capitals: THI-l (mitte THIl), and its MP3 table gives
+    only MP3-le, MP3-l, MP3-lt. Only that case is flagged. Vabamorf
+    puts a written stem vowel into the ending (ELile: "ile"), so
+    ASile ~ AS-ile, which EKI accepts both ways, never starts with l.
+
+    The suggestion follows EKI (teatmik, "Lühendamine"; "Arvukirjutus"):
+    a stem read with a final consonant takes the stem vowel i (ASle ->
+    AS-ile, as in EL-i), a digit keeps the bare ending (MP3-le), and a
+    Roman ordinal before a noun or adjective in the same case takes no
+    ending at all (XIIl sajandil -> XII sajandil); with no such word after
+    it, it keeps one (XII-le). Chloride formulas (HCl, NH4Cl) are not
+    abbreviations and are skipped.
     """
     _check_text(text)
     Text = _Text()
     t = Text(text)
     t.tag_layer(["morph_analysis"])
 
+    spans = list(t.morph_analysis)
+    looked_up: dict[str, frozenset[str]] = {}
+
+    def shows_case(k: int, form: str) -> bool:
+        """spans[k] reads as a noun or adjective in `form`."""
+        if k >= len(spans):
+            return False
+        nxt = spans[k]
+        if any(a.partofspeech in ("S", "A") and a.form == form
+               for a in nxt.annotations):
+            return True
+        if nxt.text not in looked_up:
+            if len(looked_up) >= _ABBR_LOOKUPS:
+                return False
+            looked_up[nxt.text] = _abbr_noun_forms(nxt.text)
+        return form in looked_up[nxt.text]
+
     issues: list[dict] = []
-    for span in t.morph_analysis:
+    linked = roman = False
+    for k, span in enumerate(spans):
         word = span.text
         if not word or "-" in word:
             continue  # already hyphenated or empty
@@ -3903,7 +5422,22 @@ def _check_abbreviation_hyphenation(text: str) -> dict:
         # might also have a case ending but aren't abbreviations.
         if not stem or not stem.isupper():
             continue
-        suggestion = f"{stem}-{ending}"
+        if not ending.startswith("l"):
+            continue  # ELi, APIga, MCPst: EKI accepts these without a hyphen
+        if ending == "l" and _CHLORIDE_STEM.fullmatch(stem) and (
+                stem in _CHLORIDE_PLAIN_STEMS or any(c.isdigit() for c in stem)):
+            continue  # HCl, KCl, NH4Cl, CH3Cl: the l belongs to Cl
+        if _ROMAN_IVX.fullmatch(stem):
+            if shows_case(k + 1, form):
+                suggestion = stem  # XII sajandil: the noun shows the case
+                roman = True
+            else:
+                suggestion = f"{stem}-{ending}"  # XII-le: no word shows the case
+        elif stem[-1] in _CONSONANT_NAMED:
+            suggestion = f"{stem}-i{ending}"  # AS-ile, EL-ilt, SMS-il
+            linked = True
+        else:
+            suggestion = f"{stem}-{ending}"  # OÜ-le, THI-l, MP3-le
         issues.append({
             "word": word,
             "lemma": _first(list(span.lemma)) or "",
@@ -3914,13 +5448,20 @@ def _check_abbreviation_hyphenation(text: str) -> dict:
             "suggestion": suggestion,
         })
 
-    return {
-        "issues": issues,
-        "summary_estonian": (
-            f"Leiti {len(issues)} lühendi käändelõpu sidekriipsu viga." if issues
-            else "Lühendiortograafia probleeme ei leitud."
-        ),
-    }
+    if not issues:
+        return {"issues": issues,
+                "summary_estonian": "Lühendiortograafia probleeme ei leitud."}
+    # One takes the nominative (1 käändelõpp), two or more the partitive.
+    summary = ("Leiti 1 l-alguline käändelõpp" if len(issues) == 1
+               else f"Leiti {len(issues)} l-algulist käändelõppu")
+    summary += ", mille EKI soovitab lühendist sidekriipsuga eraldada."
+    if linked:
+        summary += (" Kui lühend lõpeb hääldatuna kaashäälikuga, tuleb lõpu "
+                    "ette ka tüvevokaal i (AS-ile, EL-ilt).")
+    if roman:
+        summary += (" Kui rooma numbriga järgarvu kääne selgub järgnevast "
+                    "sõnast, jääb number hoopis käändelõputa (XII sajandil).")
+    return {"issues": issues, "summary_estonian": summary}
 
 
 @mcp.tool(annotations=ToolAnnotations(
@@ -3931,20 +5472,543 @@ def _check_abbreviation_hyphenation(text: str) -> dict:
 ))
 @_counted
 def check_abbreviation_hyphenation(text: Annotated[str, Field(description="Estonian text.")]) -> _CheckResult:
-    """Flags a case ending on an abbreviation written without a hyphen:
-    MCPst → MCP-st, APIga → API-ga, OÜle → OÜ-le.
+    """Flags an ending that starts with l written straight onto an
+    all-capital abbreviation: OÜle → OÜ-le, ÜROlt → ÜRO-lt, THIl → THI-l.
+    EKI finds the hyphen clearer there. Every other hyphenless form (ELi,
+    ELis, APIga, MCPst, ASile) is as correct as the hyphenated one and is
+    not flagged: keep the text's own choice.
+
+    A stem read with a final consonant also needs the stem vowel i
+    (ASle → AS-ile, ELlt → EL-ilt); a Roman ordinal up to XXXIX before a
+    noun or adjective in the same case drops the ending (XIIl sajandil →
+    XII).
 
     Any all-capital stem counts, known or not; mixed-case ones (SaaS, PhD,
-    iOS) are not checked. An English plural looks like a case ending
-    (APIs → API-s): check such hits.
+    iOS) and chloride formulas (HCl, NH4Cl) are not checked.
     """
     return _check_abbreviation_hyphenation(text)
+
+
+# Out-of-context lookups one check_object_case call may make. A lookup can
+# take 1 to 2 ms, and a word between teavitama and an allative is looked up
+# only when every other guard has passed, so real text needs a handful;
+# past the budget a word counts as a possible object and is not flagged.
+_TEAV_LOOKUPS = 512
+
+
+@lru_cache(maxsize=4096)
+def _teav_may_be_partitive(word: str) -> bool:
+    """Some out-of-context reading of `word` is a partitive noun, name,
+    pronoun or abbreviation. Disambiguation keeps one reading of a
+    genitive/partitive homograph and often the genitive (Teavitage oma
+    arsti: arsti comes out sg g; also kooli, Komisjoni), so a word that may
+    be the object of teavitama is looked up here instead."""
+    try:
+        found = _vabamorf().analyze(words=[word], disambiguate=False)
+    except Exception:
+        return False
+    return any(a["form"] in ("sg p", "pl p") and a["partofspeech"] in ("S", "H", "P", "Y")
+               and a["lemma"].lower() not in _TEAV_TIME_MEASURES_ET
+               for a in (found[0].get("analysis") or []))
+
+
+@lru_cache(maxsize=4096)
+def _teav_synth(lemma: str, form: str, pos: str) -> str:
+    """The first form Vabamorf synthesises, or "" when it has none."""
+    return (_synthesize(lemma, form, pos) or [""])[0]
+
+
+@lru_cache(maxsize=4096)
+def _teav_synth_like(lemma: str, form: str, pos: str, word: str, target: str,
+                     head: str = "") -> str:
+    """The first `target` form of the paradigm whose `form` is `word`. A
+    lemma with two paradigms (seade: seadme 'device' and seade 'setting';
+    kool: kooli and koola) is synthesised under the sg g hint that gives
+    back the allative in the text, the most specific one when several do
+    (the hint seade also yields seadmetele). Vabamorf reads a compound's
+    hint as its last part, `head` (lepingupool under poole, not
+    lepingupoole). A target with one form, or a lemma with one paradigm,
+    gets the first form, as _teav_synth gives it."""
+    forms = _synthesize(lemma, target, pos)
+    keys = _synthesize(lemma, "sg g", pos) if len(forms) > 1 else []
+    if len(keys) > 1:
+        cut = len(lemma) - len(head) if head and lemma.lower().endswith(head) else 0
+        own = [(len(got), key[cut:]) for key in keys
+               if word in (got := [g.lower() for g in _synthesize(lemma, form, pos, key[cut:])])]
+        if own:
+            return (_synthesize(lemma, target, pos, min(own)[1]) or [""])[0]
+    return (forms or [""])[0]
+
+
+def _teav_governor_head(span) -> str:
+    """The last compound part of `span` (lisa_toetus -> toetus), or "" for a
+    simplex word, a head in _TEAV_NON_INHERITING_HEADS_ET or a compound that
+    names a body (kiirabi is no kind of abi here)."""
+    roots = list(span.root)
+    parts = (roots[0] if roots else span.text).lower().replace("=", "").split("_")
+    if (len(parts) < 2 or parts[-1] in _TEAV_NON_INHERITING_HEADS_ET
+            or "".join(parts) in _TEAV_RECIPIENT_HEADS_ET):
+        return ""
+    return parts[-1]
+
+
+def _teav_is_allative(reading: tuple) -> bool:
+    return reading[2] in ("sg all", "pl all")
+
+
+def _teav_is_genitive(reading: tuple) -> bool:
+    return reading[2] in ("sg g", "pl g") and reading[1] in ("S", "P", "H", "A", "N", "O", "Y")
+
+
+def _teav_has_partitive(readings: list) -> bool:
+    if readings and readings[0][1] == "S" and readings[0][0].lower() in _TEAV_TIME_MEASURES_ET:
+        return False
+    return any(f in ("sg p", "pl p") and p in ("S", "P", "H", "Y") for _, p, f in readings)
+
+
+def _teav_participle_like(reading: tuple) -> bool:
+    lemma, pos, form = reading
+    return ((pos == "A" and lemma.lower().endswith(("tud", "dud", "nud", "v")))
+            or (pos == "V" and form in _TEAV_NONFINITE_FORMS))
+
+
+def _teav_ditransitive_action(reading: tuple) -> bool:
+    """A -mine noun of a verb with an allative recipient (andmine,
+    edastamine). The lemma is enough: a root ending in =mine always gives a
+    lemma ending in mine."""
+    lemma, pos, _ = reading
+    lemma = lemma.lower()
+    if pos != "S" or not lemma.endswith("mine"):
+        return False
+    stem = lemma[:-4] + "ma"
+    return (stem in _TEAV_DITRANSITIVE_VERBS_ET
+            or stem.split("_")[-1] in _TEAV_DITRANSITIVE_VERBS_ET
+            or stem.endswith(_TEAV_DITRANSITIVE_ENDINGS))
+
+
+def _teav_match_case(word: str, got: str) -> str:
+    """`got` in the letter case of `word`: Teile -> Teid, POLITSEILE ->
+    POLITSEID."""
+    if len(word) > 1 and word.isupper():
+        return got.upper()
+    if word[:1].isupper():
+        return got[:1].upper() + got[1:]
+    return got
+
+
+def _teav_inflect(span, reading: tuple, case: str) -> str:
+    """`span`, an allative, in the partitive (case "p") or genitive ("g") of
+    the same number; "" when Vabamorf has no such form."""
+    word = span.text
+    table = _TEAV_PARTITIVE_OF_ALLATIVE if case == "p" else _TEAV_GENITIVE_OF_ALLATIVE
+    got = table.get(word.lower())
+    if got is None:
+        lemma, pos, form = reading
+        roots = list(span.root)
+        head = roots[0].lower().replace("=", "").split("_")[-1] if roots else ""
+        got = _teav_synth_like(lemma, form, pos, word.lower(), f"{form.split()[0]} {case}", head)
+    return _teav_match_case(word, got)
+
+
+def _teavitama_recipient_issues(sent_spans: list, text: str,
+                                lookups: dict[str, bool] | None = None) -> list[dict]:
+    """The two government checks of check_object_case for one sentence.
+    `lookups` holds the call's out-of-context lookups (_TEAV_LOOKUPS), so
+    pass the same dict for every sentence of one text.
+
+    `teavitama-allative-recipient`: teavitama or informeerima (finite, or a
+    participle after olema/ei/pole), or the noun teavitamine/informeerimine
+    in the nominative, followed in its clause by an allative person or body
+    (teavitas politseile, teavitamine Rahapesu Andmebüroole). The guards, in
+    the order the research measured them:
+    1. a clause ends at punctuation, a clause conjunction, a relative
+       pronoun not in the allative, or a relative adverb (but not at the ja
+       of Maksu- ja Tolliamet);
+    2. a partitive anywhere else in the clause is the object already;
+    3. the allative comes within 6 tokens of a verb (3 of a noun, with only
+       genitives between) and before any other verb;
+    4. a word between the trigger and the allative that may be a partitive
+       out of context is the object (Teavitab Euroopa Komisjoni ...), except
+       a capitalised genitive before a capitalised head (a name chain);
+    5. a governor right before the allative phrase owns it: vastavalt,
+       lisaks, a postposition, an elative noun with an allative attribute
+       (muudatuse mõjust klientidele, lisatoetusest peredele) or the -mine
+       noun of a verb with a recipient of its own;
+    6. a participle, an adjective or a postposition right after the phrase
+       owns it (klientidele mõeldud, kõigile olulisest, kõigile
+       ühtsetest), and so does a participle, a ditransitive -mine noun or
+       (after a verb) a finite verb later in the clause (Rahapesu
+       Andmebüroole esitatud teatest); an adverb or translative noun right
+       after it makes the allative its experiencer (meile teadaolevalt,
+       kõigile üllatuseks), kandideerimine or asumine after a bare amet
+       makes amet a post, and a line break after the noun ends a heading
+       (Teavitamine alone on its line, or before a sentence whose own verb
+       has the recipient: Klientidele saadetakse kiri);
+    7. the head is a person or a body: a pronoun, a word whose last
+       compound part is in _TEAV_RECIPIENT_HEADS_ET, or an agent noun in -ja.
+       A noun head decides alone, so kõigile, teisele and igale count only
+       with no noun after them (Teavitame kolimisest teisele korrusele is
+       clean).
+
+    `teatama-partitive-person`: teatama right before a partitive personal
+    pronoun that ends the clause or comes before et or an elative noun
+    (Teatame Teid, et ...). In Teatame Teid puudutavatest muudatustest the
+    pronoun is not teatama's object but the participle's, so it is not
+    flagged, though Teatame Teile ... reads better. A participle within 8
+    tokens, past commas, adverbial elatives and a coordinated object, that
+    is elative itself or comes before the elative noun it describes, counts
+    (Teatame meid südamest rõõmustanud uudisest; Teatame Teid, Teie
+    perekonda ja lähedasi puudutavast otsusest).
+
+    Each check reads a window of a few tokens or a table built once per
+    sentence, and a sentence without teavit-, informeeri- or teata- is not
+    read at all, so the pass is linear in the text length.
+    """
+    toks = sent_spans
+    n = len(toks)
+    if not n or not _TEAV_HINT.search(text, toks[0].start, toks[-1].end):
+        return []
+    readings = [list(zip(s.lemma, s.partofspeech, s.form, strict=True)) for s in toks]
+    first = [r[0] if r else ("", "", "") for r in readings]
+    punct = [all(p == "Z" for _, p, _ in r) and not any(c.isalnum() for c in s.text)
+             for s, r in zip(toks, readings, strict=True)]
+
+    def boundary(k: int) -> bool:
+        if punct[k]:
+            return True
+        lemma, pos, form = first[k]
+        lemma = lemma.lower()
+        if not ((pos == "P" and lemma in _TEAV_RELATIVE_PRONOUNS_ET
+                 and form not in ("sg all", "pl all"))
+                or (pos == "D" and lemma in _TEAV_RELATIVE_ADVERBS_ET)
+                or (pos == "J" and lemma in _TEAV_CLAUSE_CONJUNCTIONS_ET)):
+            return False
+        return not (lemma in ("ja", "ning", "või") and k > 0 and toks[k - 1].text.endswith("-"))
+
+    # Per-token tables, each one pass over the sentence: the clause a token
+    # is in ([start, end)), a running count of partitives, and the next
+    # token at or after k that owns a later allative or starts a clause.
+    is_boundary = [boundary(k) for k in range(n)]
+    clause_start, clause_end = [0] * n, [n] * n
+    s = 0
+    for k in range(n):
+        clause_start[k] = s
+        if is_boundary[k]:
+            s = k + 1
+    e = n
+    for k in range(n - 1, -1, -1):
+        if is_boundary[k]:
+            e = k
+        clause_end[k] = e
+    partitive = [_teav_has_partitive(r) for r in readings]
+    partitives_before = [0] * (n + 1)
+    for k in range(n):
+        partitives_before[k + 1] = partitives_before[k] + partitive[k]
+    next_owner, next_finite = [n] * (n + 1), [n] * (n + 1)
+    next_ditransitive = [n] * (n + 1)
+    for k in range(n - 1, -1, -1):
+        lemma, pos, form = first[k]
+        next_owner[k] = (k if _teav_participle_like(first[k]) or _teav_ditransitive_action(first[k])
+                         else next_owner[k + 1])
+        finite = pos == "V" and (form in _TEAV_FINITE_FORMS or lemma in ("ei", "ära"))
+        next_finite[k] = k if finite else next_finite[k + 1]
+        next_ditransitive[k] = (k if finite and (
+            lemma.lower() in _TEAV_DITRANSITIVE_VERBS_ET
+            or lemma.lower().split("_")[-1] in _TEAV_DITRANSITIVE_VERBS_ET)
+            else next_ditransitive[k + 1])
+
+    def owns_allative_after(k: int) -> bool:
+        lemma, pos, form = first[k]
+        lemma = lemma.lower()
+        if pos == "K":
+            return True
+        if pos == "V":
+            return form not in _TEAV_NEXT_FINITE_FORMS
+        if pos in ("C", "U"):
+            return True
+        if pos == "A":
+            # An elative adjective outside the lists does not block:
+            # kõigile uutest tingimustest is still flagged.
+            return (lemma in _TEAV_ALLATIVE_ADJECTIVES_ET
+                    or _teav_governor_head(toks[k]) in _TEAV_ALLATIVE_ADJECTIVES_ET
+                    or lemma.endswith(("tud", "dud", "nud", "v"))
+                    or form not in ("sg el", "pl el", "sg all", "pl all"))
+        return any(p == "V" and f in ("tud", "nud", "v", "tav", "mata") for _, p, f in readings[k])
+
+    def experiencer_after(k: int, end: int) -> bool:
+        # meile teadaolevalt, kõigile üllatuseks, meile kõigile rõõmuks:
+        # past up to two agreeing allatives, an adverb or a translative
+        # noun whose experiencer the allative is.
+        m = k + 1
+        while m < min(end, k + 3) and _teav_is_allative(first[m]):
+            m += 1
+        if m >= end:
+            return False
+        lemma, pos, form = first[m]
+        lemma = lemma.lower()
+        return ((pos == "D" and lemma in _TEAV_EXPERIENCER_ADVERBS_ET)
+                or (pos == "S" and form == "sg tr" and lemma in _TEAV_EXPERIENCER_TRANSLATIVES_ET))
+
+    def heading(k: int) -> bool:
+        # Token k alone on its line but for markup (## Teavitamine,
+        # 1. Teavitamine), and the next line opens with a capital: a
+        # heading, not a hard-wrapped sentence.
+        if (k + 1 >= n or "\n" not in text[toks[k].end:toks[k + 1].start]
+                or not toks[k + 1].text[:1].isupper()):
+            return False
+        low = max(0, toks[k].start - 12)
+        cut = text.rfind("\n", low, toks[k].start)
+        if cut < 0 and low > 0:
+            return False
+        return not any(c.isalpha() for c in text[cut + 1:toks[k].start])
+
+    def post_goal(k: int, end: int) -> bool:
+        # A bare amet before the -mine noun of kandideerima or asuma is a
+        # post: kantsleri ametile kandideerimise tingimustest.
+        if k + 1 >= end or [r.lower() for r in toks[k].root][:1] != ["amet"]:
+            return False
+        lemma, pos, _ = first[k + 1]
+        lemma = lemma.lower()
+        return (pos == "S" and lemma.endswith("mine")
+                and lemma[:-4] + "ma" in _TEAV_POST_GOAL_VERBS_ET)
+
+    def active_participle(k: int) -> bool:
+        # Teid puudutav, meid rõõmustanud, teid kontorisse viiva: an active
+        # participle takes the pronoun as its object (a passive -tud or
+        # -tav one cannot). Vabamorf tags some as nouns (ümbritsev, S);
+        # direktiiv, motiiv and arhiiv are nouns.
+        for lemma, pos, form in readings[k]:
+            lemma = lemma.lower()
+            if pos == "V" and form in ("v", "nud"):
+                return True
+            if pos == "A" and lemma.endswith(("nud", "v")):
+                return True
+            if (pos == "S" and lemma.endswith("v") and len(lemma) >= 6
+                    and not lemma.endswith(("tiiv", "siiv", "hiiv"))
+                    and not any("_" in r for r in toks[k].root)):
+                return True
+        return False
+
+    def elative(k: int) -> bool:
+        return any(f in ("sg el", "pl el") for _, _, f in readings[k])
+
+    def governed_by_participle(k: int) -> bool:
+        # Teatame Teid ümbritsevatest ohtudest, meid südamest rõõmustanud
+        # uudisest: an active participle within 8 tokens, past commas,
+        # adverbial elatives and a coordinated object (Teid, Teie perekonda
+        # ja lähedasi puudutavast), that is elative itself or comes before
+        # the elative noun it describes. Other punctuation, a finite verb,
+        # or a conjunction or relative word that opens a clause (Teatame
+        # Teid, et ...) ends the search; so does a participle that
+        # describes something else (teid muudatustest kehtivas hinnakirjas).
+        for x in range(k, min(n, k + 8)):
+            if punct[x]:
+                if toks[x].text == ",":
+                    continue
+                return False
+            lemma, pos, form = first[x]
+            if is_boundary[x] and lemma.lower() not in ("ja", "ning", "või"):
+                return False
+            if pos == "V" and (form in _TEAV_FINITE_FORMS or lemma in ("ei", "ära")):
+                return False
+            if active_participle(x):
+                y = x + 1
+                while y < min(n, x + 3) and _teav_is_genitive(first[y]):
+                    y += 1
+                return elative(x) or (y < n and first[y][1] == "S" and elative(y))
+        return False
+
+    def recipient(k: int) -> bool:
+        lemma, pos, _ = first[k]
+        lemma = lemma.lower()
+        if pos == "P":
+            return lemma in _TEAV_RECIPIENT_PRONOUNS_ET
+        if pos not in ("S", "H", "Y"):
+            return False
+        roots = list(toks[k].root)
+        head = (roots[0] if roots else toks[k].text).lower().split("_")[-1]
+        plain = head.replace("=", "")
+        return (plain in _TEAV_RECIPIENT_HEADS_ET or lemma in _TEAV_RECIPIENT_HEADS_ET
+                or head.endswith("=ja")
+                or (plain.endswith("ja") and len(plain) >= 5 and plain not in _TEAV_NOT_AGENT_JA_ET))
+
+    def phrase_head(reading: tuple) -> bool:
+        # An allative noun, or an allative pronoun that stands for one.
+        return _teav_is_allative(reading) and (
+            reading[1] in ("S", "H", "Y")
+            or (reading[1] == "P" and reading[0].lower() in _TEAV_HEAD_PRONOUNS_ET))
+
+    def genitive_or_name(k: int) -> bool:
+        return _teav_is_genitive(first[k]) or first[k][1] in ("Y", "H")
+
+    looked_up = {} if lookups is None else lookups
+
+    def may_be_partitive(word: str) -> bool:
+        if word not in looked_up:
+            if len(looked_up) >= _TEAV_LOOKUPS:
+                return True
+            looked_up[word] = _teav_may_be_partitive(word)
+        return looked_up[word]
+
+    issues: list[dict] = []
+    flagged: set[int] = set()
+    for i in range(n):
+        l0, p0, f0 = first[i]
+        low0 = l0.lower()
+        if (p0 == "V" and low0 == "teatama" and i + 1 < n
+                and f0 not in ("tud", "nud", "mata", "v", "tav", "des")):
+            lx, px, fx = first[i + 1]
+            if px == "P" and lx.lower() in _TEAV_PERSONAL_PRONOUNS_ET and fx in ("sg p", "pl p"):
+                after = first[i + 2] if i + 2 < n else None
+                if ((after is None or punct[i + 2] or after[0].lower() == "et"
+                        or (after[1] == "S" and after[2] in ("sg el", "pl el")))
+                        and not governed_by_participle(i + 2)):
+                    word = toks[i + 1].text
+                    allative = _teav_match_case(word, _TEAV_ALLATIVE_OF_PARTITIVE.get(
+                        word.lower()) or _teav_synth(lx, f"{fx.split()[0]} all", px))
+                    issues.append({
+                        "word": word,
+                        "lemma": lx,
+                        "position": toks[i + 1].start,
+                        "form": fx,
+                        "verb": "teatama",
+                        "rule": "teatama-partitive-person",
+                        "rule_estonian": "teatama: kellele, mitte keda",
+                        "suggestion": (f"{allative} (teatama) / teavitama + {word}" if allative
+                                       else f"teavitama + {word}"),
+                    })
+            continue
+
+        verb = next((lemma.lower() for lemma, pos, _ in readings[i]
+                     if pos == "V" and lemma.lower() in _TEAV_VERBS_ET), None)
+        is_verb = p0 in ("V", "A") and verb is not None
+        is_noun = p0 == "S" and low0 in _TEAV_NOUNS_ET and f0 == "sg n"
+        if not (is_verb or is_noun):
+            continue
+        start, end = clause_start[i], clause_end[i]
+        if is_verb:
+            if f0 == "mata" or (p0 == "V" and f0 in ("v", "tav")):
+                continue
+            # A participle counts only in a verb phrase (on teavitanud, ei
+            # teavitanud), not as an attribute (teavitatud kliendile).
+            if (p0 == "A" or f0 in ("tud", "nud")) and not any(
+                    first[x][0] in ("olema", "ei", "pole") for x in range(max(start, i - 4), i)):
+                continue
+        elif i > 0 and _teav_is_genitive(first[i - 1]):
+            continue   # kliendi teavitamine: the object slot is filled
+        if partitives_before[end] - partitives_before[start] - partitive[i] > 0:
+            continue
+
+        found = None
+        for j in range(i + 1, min(end, i + (6 if is_verb else 3) + 1)):
+            if first[j][1] == "V":
+                break
+            if _teav_is_allative(first[j]):
+                found = j
+                break
+        if found is None:
+            continue
+        if is_noun and not all(_teav_is_genitive(first[x]) for x in range(i + 1, found)):
+            continue
+        # The phrase runs through agreeing allatives and genitive modifiers
+        # to its head: kõigile meie klientidele.
+        k = found
+        while k + 1 < end and not phrase_head(first[k]):
+            if _teav_is_allative(first[k + 1]) or (
+                    _teav_is_genitive(first[k + 1]) and k + 2 < end
+                    and (_teav_is_allative(first[k + 2])
+                         or (_teav_is_genitive(first[k + 2]) and k + 3 < end
+                             and _teav_is_allative(first[k + 3])))):
+                k += 1
+                continue
+            break
+
+        phrase_start = found
+        while phrase_start - 1 > i and genitive_or_name(phrase_start - 1):
+            phrase_start -= 1
+        lp, pp, fp = first[phrase_start - 1]
+        if (lp.lower() in _TEAV_ALLATIVE_GOVERNORS_ET or pp == "K"
+                or toks[phrase_start - 1].text.lower() in _TEAV_ALLATIVE_GOVERNORS_ET):
+            continue
+        if pp == "S" and fp in ("sg el", "pl el") and (
+                lp.lower() in _TEAV_ALLATIVE_ATTR_NOUNS_ET
+                or _teav_governor_head(toks[phrase_start - 1]) in _TEAV_ALLATIVE_ATTR_NOUNS_ET
+                or _teav_ditransitive_action(first[phrase_start - 1])):
+            continue
+        if k + 1 < n and not punct[k + 1] and owns_allative_after(k + 1):
+            continue
+        if experiencer_after(k, end):
+            continue
+        if next_owner[k + 1] < end or (is_verb and next_finite[k + 1] < end):
+            continue
+        # A line break after the noun: a heading (Teavitamine alone on its
+        # line), or a sentence whose own verb has the recipient follows
+        # (Teavitamine\nKlientidele saadetakse kiri).
+        if is_noun and "\n" in text[toks[i].end:toks[found].start] and (
+                heading(i) or next_ditransitive[k + 1] < end):
+            continue
+        if post_goal(k, end):
+            continue
+        # The noun head decides; a determiner (kõigile, teisele, igale)
+        # counts only when no noun follows it: Teavitame kontori kolimisest
+        # teisele korrusele is no recipient.
+        if not (recipient(k) or (first[k][1] not in ("S", "H", "Y") and recipient(found))):
+            continue
+        name_chain = toks[k].text[:1].isupper()
+        if any(not (name_chain and toks[x].text[:1].isupper() and _teav_is_genitive(first[x]))
+               and not toks[x].text.endswith("-") and first[x][1] in ("S", "H", "Y")
+               and may_be_partitive(toks[x].text)
+               for x in range(i + 1, found)):
+            continue
+
+        # Report the whole phrase, genitive modifiers and a Maksu- ja
+        # coordination included.
+        shown = phrase_start
+        while (shown - 2 > i and first[shown - 1][0].lower() in ("ja", "ning", "või")
+               and toks[shown - 2].text.endswith("-")):
+            shown -= 2
+            while shown - 1 > i and genitive_or_name(shown - 1):
+                shown -= 1
+        if toks[shown].start in flagged:
+            continue
+        flagged.add(toks[shown].start)
+        word = text[toks[shown].start:toks[k].end]
+        pieces, cursor, complete = [], toks[shown].start, True
+        for x in range(shown, k + 1):
+            pieces.append(text[cursor:toks[x].start])
+            if x >= found and _teav_is_allative(first[x]):
+                form = _teav_inflect(toks[x], first[x], "p" if is_verb else "g")
+                complete = complete and bool(form)
+                pieces.append(form)
+            else:
+                pieces.append(toks[x].text)
+            cursor = toks[x].end
+        rewritten = "".join(pieces)
+        if is_verb:
+            suggestion = (f"{rewritten} ({verb}) / teatama + {word}" if complete
+                          else f"teatama + {word}")
+        else:
+            suggestion = (f"{rewritten} {low0} / teatamine + {word}" if complete
+                          else f"teatamine + {word}")
+        issues.append({
+            "word": word,
+            "lemma": first[k][0],
+            "position": toks[shown].start,
+            "form": first[k][2],
+            "verb": verb if is_verb else low0,
+            "rule": "teavitama-allative-recipient",
+            "rule_estonian": "teavitama: keda, mitte kellele",
+            "suggestion": suggestion,
+        })
+    return issues
 
 
 def _check_object_case(text: str) -> dict:
     """Heuristic Estonian object-case-government checker.
 
-    Two rules:
+    Two government rules run on every sentence first (see
+    _teavitama_recipient_issues): teavitama with an allative recipient, and
+    teatama with a partitive personal pronoun. Then two object-case rules:
     1. Negation triggers partitive: any noun in nominative or
        genitive in a sentence containing 'ei'/'pole'/'ära'/etc. is a
        likely error.
@@ -3962,14 +6026,20 @@ def _check_object_case(text: str) -> dict:
 
     spans = list(t.morph_analysis)
     issues: list[dict] = []
+    # Words do not overlap, so starts and ends both ascend and the words
+    # inside a sentence are one slice. Filtering every word per sentence
+    # took 20 s on 100,000 characters.
+    starts = [s.start for s in spans]
+    ends = [s.end for s in spans]
+    lookups: dict[str, bool] = {}
 
     for sentence in t.sentences:
-        sent_spans = [
-            s for s in spans
-            if s.start >= sentence.start and s.end <= sentence.end
-        ]
+        sent_spans = spans[bisect.bisect_left(starts, sentence.start):
+                           bisect.bisect_right(ends, sentence.end)]
         if not sent_spans:
             continue
+
+        issues.extend(_teavitama_recipient_issues(sent_spans, text, lookups))
 
         # Detect negation + partitive-only verb governance, and remember
         # the position of whichever fires first so we only flag nouns
@@ -4080,6 +6150,28 @@ def check_object_case(text: Annotated[str, Field(description="Estonian text.")])
     pole näinud). The fix is the partitive of `lemma` in the number `form`
     shows; take it from paradigm. With no parser, a hit may be a subject or
     an adverbial, so treat it as worth a second look.
+
+    Two more rules check the government of teavitama (keda + millest) and
+    teatama (kellele + millest), and add a `suggestion`:
+    - `teavitama-allative-recipient`: teavitama or informeerima, or their
+      noun teavitamine or informeerimine (`verb`), with the person or body
+      in the allative (teavitas politseile; `word` is the allative phrase).
+    - `teatama-partitive-person`: teatama with a partitive personal pronoun
+      (Teatame Teid, et ...).
+
+    The fix is either teavitama + partitive (teavitas politseid) or
+    teatama + allative (teatas politseile); for the noun, Rahapesu
+    Andmebüroo teavitamine or teatamine Rahapesu Andmebüroole. Recall is low by
+    design: a clause that already has a partitive object (teavitab
+    õpilastele hindeid), an allative before the verb, an allative that a
+    participle, adjective or action noun governs (teavitada isikut talle
+    seatud piirangust), one whose head noun is not a person or body
+    (kolimisest teisele korrusele), the experiencer of an adverb or a
+    translative (meile teadaolevalt, kõigile üllatuseks) and an allative
+    after a heading line are not flagged, and neither is a partitive
+    pronoun that a following participle governs (Teatame Teid
+    puudutavatest muudatustest: grammatical, but Teatame Teile ... reads
+    better).
     """
     return _check_object_case(text)
 
@@ -4730,6 +6822,954 @@ _OFFICIALESE_NOMINALISATION_PER_100 = 4.0
 _OFFICIALESE_IMPERSONAL_RATIO = 0.4
 
 
+def _sentence_ranges(t, spans: list) -> list[tuple[int, int]]:
+    """(first, end) indices into `spans` for each sentence of `t`, in one
+    pass: a span belongs to the sentence whose character range holds it
+    whole. Filtering every span per sentence made a 100,000-character
+    text quadratic."""
+    ranges: list[tuple[int, int]] = []
+    k = 0
+    for sent in t.sentences:
+        while k < len(spans) and spans[k].start < sent.start:
+            k += 1
+        first = k
+        while k < len(spans) and spans[k].end <= sent.end:
+            k += 1
+        ranges.append((first, k))
+    return ranges
+
+
+def _root_parts(span) -> list[str]:
+    """Compound parts of the first analysis, lower-cased, markers dropped
+    (läbivaatamine → ['läbi', 'vaatamine'])."""
+    parts = _first(list(span.root_tokens)) or ()
+    return [p.lower().replace("_", "").replace("=", "") for p in parts]
+
+
+# Compounds Vabamorf left as one root and whose joined verb it rejects
+# (andmekaitsemõjuhindamine) that get the suffix search, per text. Each
+# search looks up about 30 long unknown words at under a millisecond
+# apiece; past the cap the verb is left out, never guessed.
+_MINE_SUFFIX_SEARCHES = 25
+
+_VOWELS_ET = "aeiouõäöü"
+
+
+def _batch_readings(words: set[str]) -> dict[str, set[tuple[str, str]]]:
+    """(partofspeech, form) of each word's lexicon readings, in one
+    Vabamorf call, with no guesser and no proper names. A spellcheck
+    accepts any well-formed form, so 'sisulooma' passed as a verb when it
+    is only the noun sisu_loom (content + animal)."""
+    if not words:
+        return {}
+    ordered = sorted(words)
+    rows = _vabamorf().analyze(ordered, disambiguate=False, guess=False,
+                               propername=False)
+    return {w: {(a["partofspeech"], a["form"]) for a in (row.get("analysis") or [])}
+            for w, row in zip(ordered, rows, strict=True)}
+
+
+def _genitive_shift(prefix: str, verb: str) -> list[tuple[str, str]]:
+    """Vabamorf sometimes cuts a genitive compound one letter late: risk +
+    ihaldamine for riski + haldamine, pilv + emigreerimine for pilve +
+    migreerimine. When the first part ends in a consonant and the verb
+    starts with a vowel, the shorter verb is a candidate on condition that
+    the first part plus that vowel is a genitive: [(verb, genitive)]."""
+    if (prefix and prefix[-1] not in _VOWELS_ET and verb[:1] in _VOWELS_ET
+            and len(verb) > 5):
+        return [(verb[1:], prefix + verb[0])]
+    return []
+
+
+def _mine_verbs(nouns: dict[str, list[str]]) -> dict[str, str | None]:
+    """The verb behind each -mine noun, given as lemma → _root_parts.
+
+    In order: an override (läbiviimine → korraldama / tegema); a particle
+    verb, written apart (läbivaatamine → läbi vaatama, EKI reegel 31),
+    when its head is a verb, tested BEFORE the joined verb because
+    Vabamorf knows the noun 'juurdepääsema'; the joined verb when Vabamorf
+    reads it as a verb (taaskasutamine → taaskasutama, but not the noun
+    'sisulooma'); the head verb of a noun + verb compound, which has no
+    compound verb (riskihindamine → hindama); and for a compound Vabamorf
+    left as one root, the longest verb of 5+ letters it ends in
+    (andmekaitsemõjuhindamine → hindama). Where Vabamorf cut a genitive
+    one letter late, the boundary moves back (riskihaldamine → haldama,
+    not ihaldama). None when nothing passes: a missing verb beats an
+    invented one. The lookups are batched: one call per text, and a
+    second only for the suffix searches."""
+    verbs: dict[str, str | None] = {}
+    pending: dict[str, list[tuple[str, str | None]]] = {}
+    particle: dict[str, str] = {}
+    for lemma, parts in nouns.items():
+        if lemma in _MINE_VERB_OVERRIDES_ET:
+            verbs[lemma] = _MINE_VERB_OVERRIDES_ET[lemma]
+            continue
+        joined = lemma[:-4] + "ma"
+        if len(parts) >= 2 and parts[-1].endswith("mine"):
+            head = parts[-1][:-4] + "ma"
+            if parts[-2] in _VERB_PARTICLES_ET:
+                particle[lemma] = f"{parts[-2]} {head}"
+            pending[lemma] = [(joined, None), *_genitive_shift(parts[-2], head),
+                              (head, None)]
+        else:
+            pending[lemma] = [(joined, None)]
+
+    def words(lemmas) -> set[str]:
+        return {w for lemma in lemmas for pair in pending[lemma] for w in pair if w}
+
+    readings = _batch_readings(words(pending))
+    unsplit = [lemma for lemma, candidates in pending.items()
+               if len(candidates) == 1
+               and ("V", "ma") not in readings.get(candidates[0][0], ())]
+    for lemma in unsplit[:_MINE_SUFFIX_SEARCHES]:
+        for i in range(1, len(lemma) - 6):
+            verb = lemma[i:-4] + "ma"
+            pending[lemma] += [*_genitive_shift(lemma[:i], verb), (verb, None)]
+    readings |= _batch_readings(words(unsplit[:_MINE_SUFFIX_SEARCHES]) - set(readings))
+
+    def accepted(verb: str, genitive: str | None) -> bool:
+        return (("V", "ma") in readings.get(verb, ())
+                and (genitive is None or ("S", "sg g") in readings.get(genitive, ())))
+
+    for lemma, candidates in pending.items():
+        if lemma in particle and accepted(candidates[-1][0], None):
+            verbs[lemma] = particle[lemma]
+        else:
+            verbs[lemma] = next((v for v, g in candidates if accepted(v, g)), None)
+    return verbs
+
+
+@lru_cache(maxsize=4096)
+def _guessed_readings(word: str) -> tuple[tuple[str, str, str], ...]:
+    """Every (lemma, partofspeech, form) Vabamorf gives `word` out of
+    context, guesser and proper names included. The sentence analysis
+    keeps one reading of a case homograph (seina comes back sg p only,
+    küla and metsa sg n or sg p), and the genitive among them is what
+    makes 'läbi' a postposition."""
+    try:
+        found = _vabamorf().analyze([word], disambiguate=False, guess=True,
+                                    propername=True)
+    except Exception:
+        return ()
+    return tuple((a["lemma"], a["partofspeech"], a["form"])
+                 for a in (found[0].get("analysis") or []))
+
+
+def _all_readings(span) -> list[tuple[str, str, str, tuple]]:
+    """(lemma, partofspeech, form, root_tokens) of every analysis the
+    sentence analysis kept for a span."""
+    return [(a.lemma or "", a.partofspeech or "", a.form or "",
+             tuple(a.root_tokens or ())) for a in span.annotations]
+
+
+def _any_readings(span) -> list[tuple[str, str, str]]:
+    """The span's readings in context plus those of its surface out of
+    context."""
+    return ([r[:3] for r in _all_readings(span)]
+            + list(_guessed_readings(span.text)))
+
+
+def _pos_any(span) -> set[str]:
+    return {pos for _lemma, pos, _form in _any_readings(span)}
+
+
+def _is_genitive(span) -> bool:
+    """Any reading, in context or out of it, is a nominal genitive."""
+    return any(pos in ("S", "A", "P", "N", "O", "H", "Y") and form.endswith(" g")
+               for _lemma, pos, form in _any_readings(span))
+
+
+def _is_elative(span) -> bool:
+    """Any reading, in context or out of it, is an elative. The guesser
+    gives capitalised words fake elatives (Pärast), so this is used only
+    where a missed hit is the cost."""
+    return any(form.endswith(" el") for _lemma, _pos, form in _any_readings(span))
+
+
+def _head_lemma(span) -> str:
+    """The lemma of a compound's last part (rahuloluküsitlus → küsitlus),
+    or the whole lemma."""
+    lemma, _pos, _form, parts = _all_readings(span)[0]
+    lemma = lemma.lower()
+    if len(parts) >= 2:
+        prefix = "".join(parts[:-1]).lower().replace("_", "")
+        if lemma.startswith(prefix):
+            return lemma[len(prefix):]
+    return lemma
+
+
+def _is_event_noun(span) -> bool:
+    """A noun one conducts: an _LABI_VIIMA_EVENTS_ET lemma or compound
+    head, or any -mine noun of 7+ letters."""
+    if "S" not in _pos_any(span):
+        return False
+    lemma = _span_bits(span)[2]
+    return (lemma in _LABI_VIIMA_EVENTS_ET
+            or _head_lemma(span) in _LABI_VIIMA_EVENTS_ET
+            or (lemma.endswith("mine") and len(lemma) >= 7))
+
+
+def _viima_form(span) -> str | None:
+    """The viima form code of a span (viidi → ti, viinud → nud), from any
+    of its readings, or None. Vabamorf returns viidud, viiv and viidav as
+    adjectives with the surface as lemma, so those map by surface."""
+    readings = _all_readings(span)
+    for lemma, pos, form, _parts in readings:
+        if lemma == "viima" and pos == "V":
+            return form
+    low = span.text.lower()
+    if low in _VIIMA_PARTICIPLES_ET and any(r[0] == low for r in readings):
+        return _VIIMA_PARTICIPLES_ET[low]
+    return None
+
+
+def _clause_before(spans: list, j: int, n: int) -> list:
+    """Up to `n` spans before spans[j], nearest first, stopping at
+    punctuation or a coordinator."""
+    out = []
+    for m in range(j - 1, max(-1, j - 1 - n), -1):
+        if (_is_punct(spans[m])
+                or spans[m].text.lower() in ("ja", "ning", "ega", "või", "kuid", "aga")):
+            break
+        out.append(spans[m])
+    return out
+
+
+def _genitive_chain(spans: list, j: int) -> tuple[bool, list]:
+    """Walk the genitive chain that starts at spans[j], at most 6 spans
+    ('kõigi harjutuste', 'Monte Grigio küla'). A postposition after it
+    takes the last noun as its complement and drops it. Returns (True, [])
+    when that leaves nothing and the postposition is non-spatial
+    ('küsitluse abil'), else (False, [first noun, last noun]) or
+    (False, [])."""
+    chain = []
+    k = j
+    while k < len(spans) and k < j + 6:
+        span = spans[k]
+        low = span.text.lower()
+        if _is_punct(span):
+            break
+        if _is_genitive(span) or low == "kogu":
+            chain.append(span)
+        elif not ((low in ("väidetavalt", "eriti", "väga", "ka") and "D" in _pos_any(span))
+                  or (low in ("ja", "ning") and chain)):
+            break
+        k += 1
+    # 'pärast' before a partitive noun is a preposition ('läbi metsa
+    # pärast lõunat'), so the chain stays the complement of 'läbi'.
+    prep = (k + 1 < len(spans) and spans[k].text.lower() == "pärast"
+            and any(pos == "S" and form.endswith(" p")
+                    for _l, pos, form, _r in _all_readings(spans[k + 1])))
+    if chain and k < len(spans) and "K" in _pos_any(spans[k]) and not prep:
+        chain = chain[:-1]
+        if not chain and spans[k].text.lower() in _LABI_VIIMA_NONSPATIAL_POSTP_ET:
+            return True, []
+    nouns = [s for s in chain if _pos_any(s) & {"S", "H"}]
+    return False, ([nouns[0], nouns[-1]] if nouns else [])
+
+
+def _adverbial_event(spans: list, k: int) -> bool:
+    """spans[k] is a -mine noun used as a time adverbial, not the thing
+    conducted: an adessive (Kaabel viiakse paigaldamisel läbi) or a
+    genitive before a non-spatial postposition (ehitamise käigus). A
+    listed event keeps its weight there: 'Tee ehitus viiakse läbi laagri
+    ajal'."""
+    if not (_span_bits(spans[k])[2].endswith("mine") and _is_event_noun(spans[k])):
+        return False
+    forms = [f for _l, p, f, _r in _all_readings(spans[k]) if p == "S"]
+    if forms and all(f.endswith(" ad") for f in forms):
+        return True
+    return (k + 1 < len(spans) and any(f.endswith(" g") for f in forms)
+            and spans[k + 1].text.lower() in _LABI_VIIMA_NONSPATIAL_POSTP_ET)
+
+
+def _route_subject(spans: list, k: int) -> bool:
+    """spans[k] is a nominative route noun, not part of a name: 'Rada viib',
+    'Toru viiakse', not 'Eesti Raudtee'. In-context readings only: the
+    guesser gives every capitalised word an H reading."""
+    if k < 0:
+        return False
+    for m in (k, k - 1):
+        if m >= 0 and any(p == "H" for _l, p, _f, _r in _all_readings(spans[m])):
+            return False
+    return (_head_lemma(spans[k]) in _LABI_VIIMA_ROUTES_ET
+            and any(p == "S" and f.endswith(" n") for _l, p, f, _r in _all_readings(spans[k])))
+
+
+def _place_after(spans: list, j: int) -> bool:
+    """'läbi' follows the viima form at spans[j] and its genitive
+    complement names a place: 'läbi laagri', 'läbi festivali
+    territooriumi', not 'läbi küsitluse'."""
+    if j + 2 >= len(spans) or spans[j + 1].text.lower() != "läbi":
+        return False
+    _postp, ends = _genitive_chain(spans, j + 2)
+    return bool(ends) and (not _is_event_noun(ends[-1])
+                           or _head_lemma(ends[-1]) in _LABI_VIIMA_PLACE_EVENTS_ET)
+
+
+def _labi_source(span) -> bool:
+    """A noun in the elative or ablative that is not a time (Külast,
+    seinast; not aastast), in context only: the guesser's fake elatives
+    (Pärast) would hide real hits."""
+    readings = _all_readings(span)
+    return ("S" in _pos_any(span)
+            and any(form.endswith((" el", " abl")) for _l, _p, form, _r in readings)
+            and not any(lemma in _LABI_VIIMA_TIME_NOUNS_ET
+                        for lemma, _p, _f, _r in readings))
+
+
+def _physical_before(spans: list, j: int, head_only: bool = False) -> bool:
+    """The viima form at spans[j] reads as leading through a place: no
+    event noun within 6 spans before it or 7 after, and its clause holds
+    a source in the elative or ablative (Külast viib läbi), kust / siit /
+    sealt, or a route noun (Rada viib läbi metsa) that is not an event's
+    modifier (Tee ehitamise käigus). With `head_only`, a route noun before
+    any other noun is a modifier too (Tee remont tuleb läbi viia). In a
+    relative clause the antecedent counts too (Kraav, mis viib läbi
+    surnuaia). An event noun used as a time adverbial does not count
+    (Kaabel viiakse paigaldamisel läbi), and nor does one after the verb
+    when a route subject leads through a place (Tee viib läbi laagri).
+    Readings in context only: the guesser's fake elatives (Pärast) would
+    hide real hits here."""
+    lo = j - len(_clause_before(spans, j, 6))
+    before = list(range(j - 1, j - 1 - len(_clause_before(spans, j, 4)), -1))
+    antecedent = j - len(before) - 2
+    relative = (bool(before) and spans[before[-1]].text.lower() in ("mis", "mida", "mille", "kus")
+                and antecedent >= 0)
+    after = range(j + 1, min(len(spans), j + 8))
+    subject = antecedent if relative and len(before) == 1 else j - 1
+    if _route_subject(spans, subject) and _place_after(spans, j):
+        after = range(0)
+    if any(_is_event_noun(spans[k]) and not _adverbial_event(spans, k)
+           for k in (*range(lo, j), *after)):
+        return False
+    if relative:
+        before.append(antecedent)
+    for k in before:
+        span = spans[k]
+        if _labi_source(span):
+            return True
+        if span.text.lower() in ("kust", "siit", "sealt", "kustkaudu"):
+            return True
+        if ("S" in _pos_any(span) and _head_lemma(span) in _LABI_VIIMA_ROUTES_ET
+                and not (k + 1 < len(spans) and _is_event_noun(spans[k + 1]))
+                and not (head_only and k + 1 < j and any(
+                    p == "S" for _l, p, _f, _r in _all_readings(spans[k + 1])))):
+            return True
+    return False
+
+
+def _viima_goal_after(spans: list, k: int) -> bool:
+    """A viima particle or a goal case (illative, short illative, allative,
+    terminative) within 6 spans from spans[k], before punctuation, a
+    coordinator or another verb: 'viidi ellu', 'viidi projekt ummikusse',
+    'viiakse kaup lõpptarbijani'."""
+    for s in spans[k:k + 6]:
+        low = s.text.lower()
+        if _is_punct(s) or low in ("ja", "ning", "ega", "või", "kuid", "aga"):
+            return False
+        if low in _VIIMA_GOAL_PARTICLES_ET:
+            return True
+        if any(pos in ("S", "A", "P", "N", "O", "H")
+               and form.endswith((" ill", "adt", " all", " ter"))
+               for _l, pos, form in _any_readings(s)):
+            return True
+        if _pos_any(s) == {"V"}:
+            return False
+    return False
+
+
+def _finite_verb(span) -> bool:
+    """Every in-context reading is a finite verb form (kontrollisime,
+    tuli, murdis)."""
+    readings = _all_readings(span)
+    return bool(readings) and all(
+        pos == "V" and form and form not in _NONFINITE_VERB_FORMS_ET
+        and not form.startswith("neg")
+        for _l, pos, form, _r in readings)
+
+
+def _labi_local(span) -> bool:
+    """An elative or a local adverb next to 'läbi': a route."""
+    return _is_elative(span) or span.text.lower() in _LABI_VIIMA_LOCAL_ADV_ET
+
+
+def _labi_possessor(span) -> bool:
+    """A genitive that makes 'läbi' its postposition. A personal pronoun
+    is the subject instead: 'on ta läbi viinud'."""
+    return (_is_genitive(span) and not _is_punct(span) and not _is_event_noun(span)
+            and _span_bits(span)[2] not in _PERSONAL_PRONOUNS_ET)
+
+
+def _labi_duration(spans: list, k: int) -> bool:
+    """spans[k] is a time span that can own 'läbi': a nominative (päev,
+    aastad), a plural partitive (päevi), or a singular partitive after a
+    numeral or quantifier (mitu tundi, kuu aega). A bare singular
+    partitive is an object: 'Tundi läbi viies'."""
+    if k < 0:
+        return False
+    before = spans[k - 1] if k > 0 else None
+    for lemma, pos, form, _r in _all_readings(spans[k]):
+        if pos != "S" or lemma not in _LABI_VIIMA_SPAN_NOUNS_ET:
+            continue
+        if form in ("sg n", "pl n", "pl p"):
+            return True
+        if form == "sg p" and before is not None and (
+                "N" in _pos_any(before)
+                or before.text.lower() in _LABI_VIIMA_SPAN_QUANTIFIERS_ET):
+            return True
+    return False
+
+
+def _bare_name(span) -> bool:
+    """A name Vabamorf cannot inflect: every non-Y reading is sg n, ? or
+    empty (Monte, Munt)."""
+    forms = {form for _l, pos, form, _r in _all_readings(span) if pos != "Y"}
+    return bool(forms) and forms <= {"sg n", "?", ""}
+
+
+def _labi_viima_issues(text: str, spans: list,
+                       sentences: list[tuple[int, int]]) -> list[dict]:
+    """'läbi viima' in the conduct sense, every form: viidi läbi, on
+    läbi viinud, viis uuringu läbi (officialese-phrase), and the nouns
+    läbiviimine, läbiviija, läbiviidud, läbiviidav, läbi viimine
+    (officialese-filler), with the korraldama / tegema form to swap in.
+
+    'läbi' is a postposition or adverb in both senses and Vabamorf's D / K
+    tag does not separate them, so the guards read the neighbours: an
+    elative or local adverb after 'läbi' (viidi metsast läbi, siit läbi),
+    a genitive before it (Metsa läbi viiv tee, Selle läbi), a genitive
+    after it whose chain holds no event noun (viis lapse läbi metsa, läbi
+    kõigi harjutuste), a route, a threaded object or a source in the
+    clause (Rada viib läbi küla, Kaabel tuleb läbi viia seinast, kaabli
+    läbiviimine), a time span that owns 'läbi' (Terve päev läbi viisime
+    kaste autosse), a genitive before an impersonal viima with a goal of
+    its own (Projekti läbi viidi ellu), the numeral (läbi viies riigis,
+    Kontrollisime läbi viis) and music theory (teema läbiviimine). Each
+    'läbi' gives at most one issue."""
+    sent_of = [-1] * len(spans)
+    for si, (lo, hi) in enumerate(sentences):
+        for k in range(lo, hi):
+            sent_of[k] = si
+    music: dict[int, bool] = {}
+
+    def music_context(i: int) -> bool:
+        si = sent_of[i]
+        if si < 0:
+            return False
+        if si not in music:
+            lo, hi = sentences[si]
+            terms = {w for s in spans[lo:hi] for w in (_span_bits(s)[2], _head_lemma(s))
+                     if w in _LABI_VIIMA_MUSIC_ET}
+            music[si] = len(terms) >= 2 or "fuuga" in terms
+        return music[si]
+
+    local, possessor = _labi_local, _labi_possessor
+
+    def phrase(first: int, last: int, form: str) -> dict:
+        # One holds a meeting rather than organising it: pidama leads when
+        # the clause names such an event (koosolek viidi läbi → peeti). A
+        # time span that owns 'läbi' is not one: 'kaks tundi läbi viidud'.
+        near = _clause_before(spans, first, 5)
+        if near and spans[first].text.lower() == "läbi" and _labi_duration(spans, first - 1):
+            near = near[1:]
+        near += spans[first:last + 1]
+        for s in spans[last + 1:last + 5]:
+            if _is_punct(s):
+                break
+            near.append(s)
+        held = any(any(p == "S" for _l, p, _f, _r in _all_readings(s))
+                   and (_span_bits(s)[2] in _LABI_VIIMA_PIDAMA_ET
+                        or _head_lemma(s) in _LABI_VIIMA_PIDAMA_ET)
+                   for s in near)
+        verbs = ("pidama", "korraldama") if held else ("korraldama", "tegema")
+        forms = [max(_synthesize(v, form, "V") or [""], key=len) for v in verbs]
+        forms = forms if all(forms) else list(verbs)
+        # 'viis uuringu läbi': the words between stay, so the suggestion
+        # replaces the whole phrase ('korraldas uuringu').
+        if last - first >= 2:
+            middle = text[spans[first + 1].start:spans[last - 1].end]
+            forms = [f"{f} {middle}" for f in forms]
+        return {
+            "phrase": text[spans[first].start:spans[last].end],
+            "position": spans[first].start,
+            "rule": "officialese-phrase",
+            "rule_estonian": "kantseliitlik väljend",
+            "explanation": _LABI_VIIMA_EXPLANATION_ET,
+            "suggestion": " / ".join(forms),
+        }
+
+    def filler(first: int, last: int, lemma: str) -> dict:
+        replacements, pos, why = _LABI_VIIMA_NOUNS_ET[lemma]
+        form = _span_bits(spans[last])[1]
+        words = [(_synthesize(r, form, pos) or [""])[0] if form else ""
+                 for r in replacements]
+        return {
+            "word": text[spans[first].start:spans[last].end],
+            "position": spans[first].start,
+            "rule": "officialese-filler",
+            "rule_estonian": "kantseliitlik täitesõna",
+            "explanation": why,
+            "suggestion": " / ".join(words if all(words) else replacements),
+        }
+
+    issues: list[dict] = []
+    n = len(spans)
+    for i, span in enumerate(spans):
+        lemma = _span_bits(span)[2]
+        if lemma in _LABI_VIIMA_NOUNS_ET:
+            # Not 'kaablite läbiviimisel seinast', not 'toru läbiviimine
+            # läbi tulemüüri' (the nearest genitive noun before it is a
+            # threaded object), not a fugue.
+            window = spans[max(0, i - 3):i] + spans[i + 1:i + 4]
+            obj = next((s for s in _clause_before(spans, i, 3)
+                        if _is_genitive(s) and "S" in _pos_any(s)), None)
+            threaded = obj is not None and _head_lemma(obj) in _LABI_VIIMA_THREADED_ET
+            if (not threaded and not any(_is_elative(w) for w in window)
+                    and not music_context(i)):
+                issues.append(filler(i, i, lemma))
+            continue
+        if span.text.lower() != "läbi" or music_context(i):
+            continue
+        prev = spans[i - 1] if i > 0 else None
+        nxt = spans[i + 1] if i + 1 < n else None
+
+        # 1. viima form + läbi: viidi läbi, viis läbi põhjaliku kontrolli.
+        form = _viima_form(prev) if prev is not None else None
+        if form is not None:
+            if _physical_before(spans, i - 1):
+                continue
+            if nxt is None or _is_punct(nxt):
+                hit = True
+            elif local(nxt):
+                hit = False
+            elif (("H" in _pos_any(nxt) or nxt.text[:1].isupper())
+                  and (_is_genitive(nxt) or _bare_name(nxt))):
+                # An agent or a place name after 'läbi' (viib läbi
+                # ülikool, viib läbi Monte Grigio küla): only with an
+                # event noun before the verb or in the name's chain. A
+                # singular nominative before an active verb is its
+                # subject, which goes along the route: 'Retk viis läbi
+                # Lõuna-Eesti metsade'.
+                _postp, ends = _genitive_chain(spans, i + 1)
+                before = [s for s in _clause_before(spans, i - 1, 5)
+                          if not (form in _VIIMA_ACTIVE_FORMS_ET
+                                  and {f for _l, p, f, _r in _all_readings(s)
+                                       if p == "S"} == {"sg n"})]
+                hit = any(_is_event_noun(s) for s in before + ends)
+            elif _is_genitive(nxt):
+                postp, ends = _genitive_chain(spans, i + 1)
+                if postp:
+                    # 'küsitluse abil' marks the conduct sense only beside
+                    # something one conducts: not 'Niit viiakse läbi nõela
+                    # abil'.
+                    after = []
+                    for s in spans[i + 1:i + 8]:
+                        if _is_punct(s):
+                            break
+                        after.append(s)
+                    postp = any(_is_event_noun(s)
+                                for s in _clause_before(spans, i - 1, 5) + after)
+                hit = postp or any(_is_event_noun(s) for s in ends)
+            else:
+                hit = True
+            if hit:
+                issues.append(phrase(i - 1, i, form))
+            continue
+
+        # 2. Split nouns: läbi viimine, läbi viija.
+        split = _span_bits(nxt)[2] if nxt is not None else ""
+        if split in _LABI_VIIMA_SPLIT_NOUNS_ET:
+            if prev is None or not (local(prev) or possessor(prev)):
+                issues.append(filler(i, i + 1, _LABI_VIIMA_SPLIT_NOUNS_ET[split]))
+            continue
+
+        # 3. läbi + viima form: tuleb läbi viia, läbi viidud uuring.
+        form = _viima_form(nxt) if nxt is not None else None
+        if form is not None:
+            after = spans[i + 2] if i + 2 < n else None
+            # The numeral before a noun (läbi viies riigis), or after a
+            # finite verb whose particle 'läbi' is (Kontrollisime läbi viis
+            # väga erinevat stsenaariumi, Sõelast tuli läbi viies ja kuues).
+            if (nxt.text.lower() in _VIIS_NUMERAL_SURFACES_ET
+                    and ((after is not None and "S" in _pos_any(after))
+                         or (prev is not None and _finite_verb(prev)))):
+                continue
+            if prev is not None and local(prev) and not any(
+                    lemma in _LABI_VIIMA_TIME_NOUNS_ET
+                    for lemma, _p, _f in _guessed_readings(prev.text)):
+                continue
+            if prev is not None and possessor(prev):
+                continue
+            # An impersonal verb takes no genitive object, so a genitive
+            # before 'läbi' is its postposition's complement, even for an
+            # event noun or a pronoun, when viima has its own goal:
+            # 'Projekti läbi viidi ellu mitu algatust', 'Tema läbi viidi
+            # raha välismaale'.
+            if (form in _VIIMA_IMPERSONAL_FORMS_ET and prev is not None
+                    and _is_genitive(prev) and _viima_goal_after(spans, i + 2)):
+                continue
+            rest = []
+            for s in spans[i + 2:i + 8]:
+                if _is_punct(s) or s.text.lower() in ("ja", "ning", "ega", "või", "kuid", "aga"):
+                    break
+                rest.append(s)
+            clause = _clause_before(spans, i, 6) + rest
+            # A time span owns 'läbi' (Terve päev läbi viisime kaste
+            # autosse) unless an event noun is near (Kaks nädalat läbi
+            # viidud küsitlus).
+            if _labi_duration(spans, i - 1) and not any(_is_event_noun(s) for s in clause):
+                continue
+            # A route subject or source before (Kaabel tuleb läbi viia), or
+            # a source or 'kaudu' after (tuli läbi viia rahvamassist, on
+            # läbi viidud seina kaudu), with no event noun near. The route
+            # noun must head its phrase: 'Tee remont tuleb läbi viia' is
+            # conduct.
+            if _physical_before(spans, i + 1, head_only=True) or (
+                    any(_labi_source(s) or s.text.lower() in ("kaudu", "siit", "sealt")
+                        for s in rest)
+                    and not any(_is_event_noun(s) for s in clause)):
+                continue
+            issues.append(phrase(i, i + 1, form))
+            continue
+
+        # 4. viima form, 1 to 3 words, läbi: viis uuringu läbi.
+        for back in (2, 3, 4):
+            j = i - back
+            if j < 0:
+                break
+            form = _viima_form(spans[j])
+            if form is None:
+                continue
+            between = spans[j + 1:i]
+            # Not past the verb's own 'läbi': 'Talgud viidi läbi päev läbi'.
+            if (any(_is_punct(s) or s.text.lower() == "läbi" for s in between)
+                    or (prev is not None and local(prev))
+                    or (nxt is not None and not _is_punct(nxt)
+                        and (_is_genitive(nxt) or local(nxt)))
+                    or _physical_before(spans, j)):
+                break
+            # An event noun as a time adverbial is not what is conducted:
+            # 'Kaabel viiakse paigaldamisel läbi'.
+            if any(_is_event_noun(spans[k]) and not _adverbial_event(spans, k)
+                   for k in range(j - len(_clause_before(spans, j, 4)), i) if k != j):
+                issues.append(phrase(j, i, form))
+            break
+    return issues
+
+
+def _kusin_tapsemalt_issue(text: str, s: list, prev: list) -> dict | None:
+    """'Küsin täpsemalt, kas …' at the start of the sentence `s` (spans),
+    with `prev` the spans of the sentence before it. See
+    _KUSIN_INTERROG_LEMMAS_ET for the rule; the guards skip quoted speech
+    (quotation marks, a leading dialogue dash or a quoted e-mail line '>'),
+    a question, a question noun (uurimisküsimus) or a stated aim (eesmärk)
+    just before (then 'täpsemalt' has something to refine), the stressed
+    Mina / Meie, any word between küsin and täpsemalt (küsin
+    raamatupidajalt täpsemalt, küsin siis täpsemalt), bare 'kui' (if), a
+    plan to report back (…, ja annan teada; …, ja võtan teiega ühendust)
+    and narration where the person asked reacts in the same sentence
+    (…, aga ta vaikib)."""
+    if prev and (prev[-1].text == "?"
+                 or any((lemma := _span_bits(x)[2]) == "küsima"
+                        or lemma.endswith(("küsimus", "eesmärk")) for x in prev)):
+        return None
+    if any(x.text in _QUOTE_MARKS for x in s):
+        return None
+    k = 0
+    while k < len(s) and not s[k].text[:1].isalpha():
+        k += 1
+    if any(x.text[:1] in _KUSIN_SPEECH_LEAD_ET for x in s[:k]):
+        return None
+    if k + 1 < len(s) and s[k].text.lower() in ("tere", "tervist") and s[k + 1].text == ",":
+        k += 2
+    start = k
+    if k < len(s) and s[k].text.lower() in ("ma", "me"):
+        k += 1
+    if k >= len(s):
+        return None
+    forms = {a.form for a in s[k].annotations
+             if a.lemma == "küsima" and a.partofspeech == "V"}
+    if not forms & {"n", "me"}:
+        return None
+    j = k + 1
+    to_you = j < len(s) and s[j].text.lower() == "sinult"
+    if j < len(s) and s[j].text.lower() in ("teilt", "sinult"):
+        j += 1
+    if j >= len(s) or s[j].text.lower() != "täpsemalt":
+        return None
+    end = s[j].end
+    j += 1
+    if j >= len(s) or s[j].text not in (",", ":"):
+        return None
+    j += 1
+    if j < len(s) and s[j].text.lower() == "et":
+        j += 1
+    if j >= len(s):
+        return None
+    opener = s[j]
+    if not (_span_bits(opener)[2] in _KUSIN_INTERROG_LEMMAS_ET
+            or (opener.text.lower() == "kui" and j + 1 < len(s)
+                and s[j + 1].text.lower() in _KUSIN_KUI_DEGREE_ET)):
+        return None
+    tail = s[j + 1:]
+    contact = any(x.text.lower() == "ühendust" for x in tail)
+    if any(a.partofspeech == "V" and a.form in ("n", "me")
+           and (a.lemma in _KUSIN_PLAN_VERBS_ET or (contact and a.lemma == "võtma"))
+           for x in tail for a in x.annotations):
+        return None
+    if any(tail[m].text == "," and tail[m + 1].text.lower() in _KUSIN_NARRATION_BUT_ET
+           and _span_bits(tail[m + 2])[2] in ("tema", "nemad")
+           for m in range(len(tail) - 2)):
+        return None
+    plural = "me" in forms
+    if to_you:
+        suggestion = ("Palun täpsusta, … / Tahaksime täpsemalt teada, …" if plural
+                      else "Palun täpsusta, … / Tahaksin täpsemalt teada, …")
+    elif plural:
+        suggestion = "Palume täpsustada, … / Sooviksime täpsemalt teada, …"
+    else:
+        suggestion = "Palun täpsustage, … / Sooviksin täpsemalt teada, …"
+    return {
+        "phrase": text[s[start].start:end],
+        "position": s[start].start,
+        "rule": "kusin-tapsemalt",
+        "rule_estonian": "'küsin täpsemalt'-palve",
+        "explanation": _KUSIN_TAPSEMALT_EXPLANATION_ET,
+        "suggestion": suggestion,
+    }
+
+
+# How far _calque_find_is_search looks past 'Palun leidke' for 'üles'.
+# Bounded, so a text of 'Palun leidke manuses' without punctuation stays
+# linear.
+_CALQUE_SEARCH_WINDOW = 12
+
+
+def _calque_find_is_search(spans: list, i: int, k: int) -> bool:
+    """True when 'Palun leidke' at spans[i] with the attachment word at
+    spans[k] is a real search instruction, not 'please find attached':
+    'leia lisast üles', 'leidke manusest oma nimi', 'leia lisatud failist
+    viga', 'leidke lisas 3 toodud tabelist', 'leidke manuses toodud
+    juhendi järgi'."""
+    n = len(spans)
+    end = min(n, i + _CALQUE_SEARCH_WINDOW)
+    end = next((j for j in range(i + 2, end) if _is_punct(spans[j])), end)
+    if any(s.text.lower() == "üles" for s in spans[i + 2:end]):
+        return True
+    rest = spans[k + 1:end]
+    if rest and rest[0].text.lower() == "oma":
+        return True
+    # The head after the attachment word, past numbers, adjectives and
+    # participles: a place to search (elative, ablative, or genitive +
+    # postposition) rather than the thing sent.
+    for j, s in enumerate(rest):
+        pos, form, _lemma = _span_bits(s)
+        if pos in ("N", "A") or (pos == "V" and form in ("tud", "nud", "v")):
+            continue
+        if form.endswith((" el", " abl")):
+            return True
+        return (form.endswith(" g") and j + 1 < len(rest)
+                and _span_bits(rest[j + 1])[0] == "K")
+    return False
+
+
+def _calque_thanks_for_your(spans: list, j: int) -> bool:
+    """True when spans[j:] is the 'X eest' that 'tänan teid teie' thanks
+    for: an 'eest' within six words, with no punctuation or adposition on
+    the way, and not 'teie ja ...' (two possessors), 'sinu enda ...' or a
+    place or manner phrase (sinu kodus, teie emakeeles)."""
+    first = spans[j]
+    readings = [(a.lemma or "", a.partofspeech or "", a.form or "")
+                for a in first.annotations]
+    if (any(pos == "J" or lemma in ("ise", "oma") for lemma, pos, _f in readings)
+            or (readings and all(form.endswith(_CALQUE_LOCAL_CASES)
+                                 for _l, _p, form in readings))):
+        return False
+    for k in range(j, min(len(spans), j + 6)):
+        w = spans[k]
+        if w.text.lower() == "eest":
+            return k > j
+        if _is_punct(w) or _span_bits(w)[0] == "K":
+            return False
+    return False
+
+
+@lru_cache(maxsize=4096)
+def _calque_imperative(lemma: str, plural: bool) -> str:
+    """The 2sg or 2pl imperative of a verb (küsima: küsi, küsige), or ''
+    when Vabamorf has none."""
+    return _first(_synthesize(lemma, "ge" if plural else "o", "V")) or ""
+
+
+def _calque_issues(text: str, spans: list) -> list[dict]:
+    """calque-phrase issues: translated stock phrases of letters and
+    business prose (see _CALQUE_NOT_LIMITED_RE and the sets after it)."""
+    issues: list[dict] = []
+
+    def add(start: int, end: int, why: str, plain: str) -> None:
+        issues.append({
+            "phrase": text[start:end],
+            "position": start,
+            "rule": "calque-phrase",
+            "rule_estonian": "tõlkelaenuline väljend",
+            "explanation": why,
+            "suggestion": plain,
+        })
+
+    for m in _CALQUE_NOT_LIMITED_RE.finditer(text):
+        head, tail = m.group("head"), " ".join(m.group("tail").split())
+        if head.lower() in ("eelkõige", "eeskätt"):
+            why = (f"'{tail}' on üleliigne lisand (inglise primarily, but not "
+                   f"exclusively); '{head}' ütleb juba, et peale nimetatu on teisigi.")
+        else:
+            why = (f"'{tail}' on tõlkelaen (including, but not limited to); "
+                   f"'{head}' ütleb juba, et loetelu pole lõplik.")
+        add(m.start(), m.end(), why, f"{head} (ilma lisandita '{tail}')")
+
+    # Imperatives synthesised for 'ära kõhkle ...-mast' in this text; past
+    # _NUM_LOOKUPS distinct verbs the suggestion falls back to a fixed one.
+    imperatives: dict[tuple[str, bool], str] = {}
+
+    def readings(span) -> list[tuple[str, str, str]]:
+        return [(a.lemma or "", a.partofspeech or "", a.form or "") for a in span.annotations]
+
+    def lemmas(span) -> set[str]:
+        return {lemma for lemma, _pos, _form in readings(span)}
+
+    n = len(spans)
+    for i, span in enumerate(spans):
+        low = span.text.lower()
+        nxt = spans[i + 1] if i + 1 < n else None
+
+        # antud juhul / hetkel / olukorras / kontekstis, not the participle.
+        if low == "antud" and nxt is not None and nxt.text.lower() in _CALQUE_ANTUD_NOUNS:
+            prev = spans[i - 1] if i else None
+            prev_low = prev.text.lower() if prev is not None else ""
+            clause_after = (i + 3 < n and spans[i + 2].text == ","
+                            and spans[i + 3].text.lower() in _CALQUE_ANTUD_CLAUSE_AFTER)
+            participle = prev is not None and (
+                _span_bits(prev)[0] in ("S", "P", "H")
+                or prev_low in _CALQUE_ANTUD_PARTICIPLE_BEFORE
+                or (clause_after and (prev_low in _OLEMA_FORMS_ET or prev_low.endswith("lt"))))
+            if not participle:
+                add(span.start, nxt.end,
+                    "'antud' on toortõlge (vene данный, inglise given); eesti keeles "
+                    "'see, kõnealune, nimetatud'. ÕS lubab seda, kuid omasõna on "
+                    "selgem. Stiilisoovitus.",
+                    _CALQUE_ANTUD_NOUNS[nxt.text.lower()])
+
+        # adresseerima a problem, not a letter or question to someone.
+        if "adresseerima" in lemmas(span):
+            window = spans[max(0, i - 4):i + 5]
+            if (any(_span_bits(w)[2] in _CALQUE_PROBLEM_NOUNS for w in window)
+                    and not any(_span_bits(w)[1].endswith(" all") for w in window)
+                    and not any(w.text.lower() == "ümber"
+                                or (_span_bits(w)[0] == "S" and _head_lemma(w) in _CALQUE_MAIL_NOUNS)
+                                for w in window)):
+                add(span.start, span.end,
+                    "'adresseerima' tähenduses 'probleemiga tegelema' on inglise "
+                    "keele mõju (address); selgem on 'tegelema, lahendama, "
+                    "käsitlema'. Stiilisoovitus.",
+                    "tegelema / lahendama / käsitlema")
+
+        # ära / ärge kõhelge ... võtmast (don't hesitate to).
+        if (lemmas(span) & {"kõhklema", "kõhelema"}
+                and any(form in ("o", "ge") for _l, _p, form in readings(span))
+                and i and spans[i - 1].text.lower() in ("ära", "ärge")):
+            for k in range(i + 1, min(n, i + 5)):
+                if _is_punct(spans[k]):
+                    break
+                verb = next((lemma for lemma, pos, form in readings(spans[k])
+                             if pos == "V" and form == "mast"), None)
+                if verb is not None:
+                    # The suggestion keeps the verb and the number of
+                    # 'ära' / 'ärge': Ära kõhkle küsimast → Küsi julgelt.
+                    plural = spans[i - 1].text.lower() == "ärge"
+                    key = (verb, plural)
+                    if key not in imperatives and len(imperatives) < _NUM_LOOKUPS:
+                        imperatives[key] = _calque_imperative(verb, plural)
+                    imperative = imperatives.get(key, "")
+                    if imperative:
+                        if spans[i - 1].text[:1].isupper():
+                            imperative = imperative[:1].upper() + imperative[1:]
+                        between = " ".join(s.text for s in spans[i + 1:k])
+                        plain = " ".join(w for w in (imperative, "julgelt", between) if w)
+                    else:
+                        plain = "Võtke julgelt ühendust" if plural else "Võta julgelt ühendust"
+                    add(spans[i - 1].start, spans[k].end,
+                        "'ärge kõhelge ühendust võtmast' on tõlkelaen (don't hesitate "
+                        "to contact); eesti keeles 'võtke julgelt ühendust'.",
+                        plain)
+                    break
+
+        # (kiri) leiab teid hästi (this email finds you well).
+        if ("leidma" in lemmas(span) and i + 2 < n
+                and spans[i + 1].text.lower() in ("teid", "sind")
+                and spans[i + 2].text.lower() in ("hästi", "heas", "tervena")
+                and not (i + 3 < n and spans[i + 3].text.lower() == "üles")):
+            # The letter noun is the subject of leidma: nominative, in the
+            # same clause (no punctuation or conjunction between), at most
+            # three words back (see kiri ka seekord leiab).
+            for k in range(i - 1, max(-1, i - 4), -1):
+                if _is_punct(spans[k]) or any(pos == "J" for _l, pos, _f in readings(spans[k])):
+                    break
+                if any(lemma in _CALQUE_LETTER_NOUNS and form in ("sg n", "pl n")
+                       for lemma, _p, form in readings(spans[k])):
+                    add(span.start, spans[i + 2].end,
+                        "'kiri leiab teid hästi' on tõlkelaen (I hope this email "
+                        "finds you well); alusta otse asjast või kirjuta 'Loodan, et "
+                        "teil läheb hästi'.",
+                        "jäta lause ära / Loodan, et teil läheb hästi.")
+                    break
+
+        # tänan teid teie ... eest (thank you for your).
+        if ("tänama" in lemmas(span) and i + 3 < n
+                and (spans[i + 1].text.lower(), spans[i + 2].text.lower())
+                in (("teid", "teie"), ("sind", "sinu"))
+                and _calque_thanks_for_your(spans, i + 3)):
+            add(span.start, spans[i + 2].end,
+                "'tänan teid teie ... eest' kordab omanikku inglise 'thank you for "
+                "your' eeskujul; eesti keeles piisab 'tänan teid ... eest'.",
+                f"{span.text} {spans[i + 1].text} (ilma sõnata '{spans[i + 2].text}')")
+
+        # vaatan edasi koostööle (look forward to).
+        if "vaatama" in lemmas(span) and nxt is not None and nxt.text.lower() == "edasi":
+            for k in range(i + 2, min(n, i + 4)):
+                if _is_punct(spans[k]):
+                    break
+                if any(pos == "S" and form in ("sg all", "pl all")
+                       and lemma.lower().endswith(_CALQUE_LOOK_FORWARD_NOUNS)
+                       for lemma, pos, form in readings(spans[k])):
+                    add(span.start, spans[k].end,
+                        "'vaatan edasi millelegi' on tõlkelaen (look forward to); "
+                        "eesti keeles 'ootan huviga'.",
+                        "ootan huviga + osastav (nt 'ootan huviga meie koostööd')")
+                    break
+
+        # Palun leidke manuses (please find attached).
+        if (low == "palun" and nxt is not None
+                and any(lemma == "leidma" and form in ("ge", "o") for lemma, _p, form in readings(nxt))):
+            # The attachment word right after the verb: 'Palun leidke
+            # aega lisatud küsimustikule vastamiseks' is not the calque.
+            k = i + 2
+            if (k + 1 < n and spans[k].text.lower() == "kaasa"
+                    and spans[k + 1].text.lower() == "lisatud"):
+                k += 1
+            att = spans[k] if k < n else None
+            if (att is not None
+                    and (att.text.lower() in _CALQUE_ATTACHED
+                         or any(lemma == "manus" and form in _CALQUE_MANUS_FORMS
+                                for lemma, _p, form in readings(att)))
+                    and not _calque_find_is_search(spans, i, k)):
+                add(span.start, att.end,
+                    "'Palun leidke manuses' on tõlkelaen (please find attached); "
+                    "eesti keeles 'Manuses on ...', 'Saadan manuses ...' või "
+                    "'Kirjale on lisatud ...'.",
+                    "Manuses on ... / Saadan manuses ...")
+    return issues
+
+
 def _check_officialese(text: str) -> dict:
     """Kantseliit diagnostic for NON-legal Estonian: reports, academic
     prose, R&D/grant paperwork, business writing.
@@ -4746,7 +7786,9 @@ def _check_officialese(text: str) -> dict:
     - clause stacking per sentence, the 'mille käigus … ning …' pile-up
       a raw word count misses
     - long sentences, on an Estonian-calibrated gate
-    - administrative filler with plain equivalents
+    - administrative filler with plain equivalents, 'läbi viima' in the
+      conduct sense (_labi_viima_issues) among it
+    - 'Küsin täpsemalt, kas …' in letters (_kusin_tapsemalt_issue)
 
     Precision-first, like its legal sibling: absence of flags is not proof
     the text is plain.
@@ -4759,19 +7801,40 @@ def _check_officialese(text: str) -> dict:
 
     issues: list[dict] = []
 
-    # --- 1. Nominalisation: -mine verbal nouns, with the verb to swap in.
+    # --- 1. Nominalisation: -mine verbal nouns, with the verb to swap in
+    # (see _mine_verbs; omitted when no real verb is found).
     nominalisations: list[dict] = []
-    for span in spans:
+    mine_parts: dict[str, list[str]] = {}
+    for k, span in enumerate(spans):
         pos, _form, lemma = _span_bits(span)
         if pos != "S" or not lemma.endswith("mine") or len(lemma) < 7:
             continue
-        verb = lemma[:-4] + "ma"
+        low = span.text.lower()
+        # -misi adverbs: vaikimisi (by default), kiirustamisi.
+        if low in _MISI_ADVERBS_ET or (low.endswith("misi") and any(
+                p == "D" for _l, p, _f in _guessed_readings(span.text))):
+            continue
+        parts = _root_parts(span)
+        if lemma in _MINE_LEXICALISED_ET or (parts and parts[-1] in _MINE_LEXICALISED_ET):
+            continue
+        first = span
+        # 'läbi viimine' is the split spelling of 'läbiviimine' (EKI
+        # reegel 32 Märkus), so it takes the same verb, not bare 'viima';
+        # not after a genitive or a source ('metsa läbi viimine').
+        if (lemma == "viimine" and k and spans[k - 1].text.lower() == "läbi"
+                and not (k >= 2 and (_labi_local(spans[k - 2])
+                                     or _labi_possessor(spans[k - 2])))):
+            first, lemma, parts = spans[k - 1], "läbiviimine", ["läbi", "viimine"]
+        mine_parts.setdefault(lemma, parts)
         nominalisations.append({
-            "word": span.text,
+            "word": text[first.start:span.end],
             "lemma": lemma,
-            "position": span.start,
-            "verb": verb,
+            "position": first.start,
         })
+    mine_verbs = _mine_verbs(mine_parts)
+    for nom in nominalisations:
+        if mine_verbs.get(nom["lemma"]):
+            nom["verb"] = mine_verbs[nom["lemma"]]
 
     word_count = sum(1 for s in spans if s.text and s.text[0].isalpha())
     noun_count = sum(1 for s in spans if _span_bits(s)[0] == "S")
@@ -4790,9 +7853,9 @@ def _check_officialese(text: str) -> dict:
                 f"{word_count} sõna kohta. Tegevust väljendav nimisõna "
                 f"muudab lause raskeks. Kasuta tegusõna."
             ),
-            "suggestion": ", ".join(
-                f"{n['lemma']} → {n['verb']}" for n in nominalisations[:5]
-            ),
+            "suggestion": ", ".join(list(dict.fromkeys(
+                f"{n['lemma']} → {n['verb']}" for n in nominalisations if "verb" in n
+            ))[:5]) or "kasuta tegusõna",
         })
 
     if noun_verb_ratio >= _OFFICIALESE_NOUN_VERB_RATIO:
@@ -4822,9 +7885,11 @@ def _check_officialese(text: str) -> dict:
             "suggestion": "kirjuta isikulises tegumoes, nt 'koguti' → 'kogusime'",
         })
 
-    # --- 2. Per-sentence: clause stacking and length.
-    for sent in t.sentences:
-        s_spans = [s for s in spans if s.start >= sent.start and s.end <= sent.end]
+    # --- 2. Per-sentence: clause stacking, length, 'Küsin täpsemalt, kas'.
+    sentences = _sentence_ranges(t, spans)
+    prev_spans: list = []
+    for sent, (lo, hi) in zip(t.sentences, sentences, strict=True):
+        s_spans = spans[lo:hi]
         n_words = sum(1 for s in s_spans if s.text and s.text[0].isalpha())
         subs = [s.text for s in s_spans if s.text.lower() in _SUBORDINATORS_ET]
         preview = sent.enclosing_text
@@ -4855,7 +7920,15 @@ def _check_officialese(text: str) -> dict:
                 "suggestion": "jaga lause lühemateks lauseteks",
             })
 
-    # --- 3. Administrative filler (lemma-exact + fixed phrase pairs).
+        found = _kusin_tapsemalt_issue(text, s_spans, prev_spans)
+        if found:
+            issues.append(found)
+        prev_spans = s_spans
+
+    # --- 3. Administrative filler (lemma-exact + fixed phrase pairs), and
+    # 'läbi viima' in all its forms.
+    issues.extend(_labi_viima_issues(text, spans, sentences))
+    issues.extend(_calque_issues(text, spans))
     for i, span in enumerate(spans):
         pos, _form, lemma = _span_bits(span)
         low = span.text.lower()
@@ -4877,7 +7950,7 @@ def _check_officialese(text: str) -> dict:
             if pair in _OFFICIALESE_PHRASES_ET:
                 plain, why = _OFFICIALESE_PHRASES_ET[pair]
                 issues.append({
-                    "phrase": f"{span.text} {spans[i + 1].text}",
+                    "phrase": text[span.start:spans[i + 1].end],
                     "position": span.start,
                     "rule": "officialese-phrase",
                     "rule_estonian": "kantseliitlik väljend",
@@ -4891,7 +7964,7 @@ def _check_officialese(text: str) -> dict:
             prev_pos, prev_form, _prev_lemma = _span_bits(spans[i - 1])
             if prev_pos == "S" and prev_form in ("sg g", "pl g"):
                 issues.append({
-                    "phrase": f"{spans[i - 1].text} poolt",
+                    "phrase": text[spans[i - 1].start:span.end],
                     "position": spans[i - 1].start,
                     "rule": "poolt-calque",
                     "rule_estonian": "'poolt'-tarind",
@@ -4953,10 +8026,41 @@ def check_officialese(text: Annotated[str, Field(description="Estonian non-legal
     first), `noun-density` (noun/verb 2.5+, weakest: weigh it last),
     `clause-stacking` (3+ subordinate-clause openers in a sentence),
     `long-sentence` (25+ words), `officialese-filler`,
-    `officialese-phrase`, `poolt-calque`. `impersonal-voice` and
-    `noun-density` are document-wide (position 0).
-    `metrics.nominalisations` gives each -mine noun's verb (hindamine →
-    hindama).
+    `officialese-phrase`, `poolt-calque`, `kusin-tapsemalt`,
+    `calque-phrase`.
+    `impersonal-voice` and `noun-density` are document-wide (position 0).
+    'läbi viima' in the conduct sense is an `officialese-phrase` in any
+    form (viidi läbi, on läbi viinud, viis uuringu läbi), and
+    läbiviimine, läbiviija, läbiviidud, läbiviidav, läbi viimine an
+    `officialese-filler`, suggesting korraldama / tegema (pidama for a
+    meeting) in the same form, with the words between kept (viis uuringu
+    läbi → korraldas uuringu); routes and threaded objects (Rada viib
+    läbi metsa, Kaabel tuleb läbi viia seinast, kaabli läbiviimine), time
+    spans (päev läbi), postpositions, the numeral viis and the fugue term
+    are skipped, and the 'läbi suruma' sense is not told apart. A thing
+    carried through with no route word (Kohver viidi läbi) is still
+    flagged. `kusin-tapsemalt` is a
+    sentence-initial 'Küsin/Küsime täpsemalt, kas …' in a letter; a plan
+    to ask someone else matches too unless a reporting-back verb follows
+    (…, ja annan teada; …, ja võtan teiega ühendust), and quoted speech,
+    a dialogue-dash line and a quoted e-mail line ('>') are skipped.
+    Both are style hints, not errors.
+    `calque-phrase` is a translated stock phrase of letters: sealhulgas,
+    kuid mitte ainult (and eelkõige, kuid mitte ainult, where only the
+    tail goes); antud juhul / hetkel / olukorras, not the participle (on
+    antud olukorras, kus ...); adresseerima a problem, not a mail item;
+    ärge kõhelge ... võtmast, rewritten with its own verb; kiri leiab
+    teid hästi; tänan teid teie ... eest; vaatan edasi koostööle, with an
+    awaited event (not vaatas edasi merele); Palun leidke manuses, not a
+    search instruction (Palun leidke manusest oma nimi). Leiate manusest
+    and läbi e-posti are accepted Estonian and not flagged.
+    `metrics.nominalisations` gives each -mine noun's verb, a particle
+    verb written apart (läbivaatamine → läbi vaatama, tagaajamine → taga
+    ajama), a noun + verb compound by its head (riskihindamine → hindama,
+    sisuloomine → looma), and no `verb` when none is known. The split
+    'läbi viimine' counts as läbiviimine. Nouns lexicalised as things
+    (teadmised, pakkumine, kohtumine, ettevõtmine and their compounds)
+    and -misi adverbs (vaikimisi) are not counted.
 
     Precision-first starter lexicons: no issues is not proof the text is
     plain.
